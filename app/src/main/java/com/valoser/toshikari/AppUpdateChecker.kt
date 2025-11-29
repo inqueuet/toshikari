@@ -28,7 +28,7 @@ import java.util.concurrent.TimeUnit
  * GitHub の最新リリースを確認し、アプリに新しいバージョンがある場合は通知するヘルパー。
  *
  * - 一定間隔（既定: 12 時間）で GitHub Releases API をポーリング。
- * - 取得した `tag_name` を現在の `BuildConfig.VERSION_NAME` と比較し、新しい場合のみ通知。
+ * - 取得した `tag_name` を端末にインストールされているアプリのバージョン名と比較し、新しい場合のみ通知。
  * - 同じバージョンでの重複通知は SharedPreferences に記録して抑止。
  */
 @Singleton
@@ -52,7 +52,8 @@ class AppUpdateChecker @Inject constructor(
 
         val release = fetchLatestRelease() ?: return
         val latestVersion = normalizeVersion(release.tagName) ?: return
-        val currentVersion = normalizeVersion(BuildConfig.VERSION_NAME) ?: BuildConfig.VERSION_NAME
+        val currentVersionRaw = currentVersionName() ?: return
+        val currentVersion = normalizeVersion(currentVersionRaw) ?: currentVersionRaw
 
         if (!isNewerVersion(latestVersion, currentVersion)) {
             return
@@ -122,6 +123,19 @@ class AppUpdateChecker @Inject constructor(
             ?.removePrefix("v")
             ?.removePrefix("V")
             ?.ifBlank { null }
+    }
+
+    private fun currentVersionName(): String? {
+        val packageName = context.packageName
+        return runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val flags = PackageManager.PackageInfoFlags.of(0)
+                context.packageManager.getPackageInfo(packageName, flags).versionName
+            } else {
+                @Suppress("DEPRECATION")
+                context.packageManager.getPackageInfo(packageName, 0).versionName
+            }
+        }.getOrNull()
     }
 
     private fun notifyNewVersion(release: ReleaseInfo, displayVersion: String): Boolean {
