@@ -1,0 +1,45 @@
+# Add project specific ProGuard rules here.
+# You can control the set of applied configuration files using the
+# proguardFiles setting in build.gradle.
+#
+# For more details, see
+#   http://developer.android.com/guide/developing/tools/proguard.html
+
+# If your project uses WebView with JS, uncomment the following
+# and specify the fully qualified class name to the JavaScript interface
+# class:
+#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
+#   public *;
+#}
+
+# Preserve line number information for debugging stack traces in production
+-keepattributes SourceFile,LineNumberTable
+
+# Hide the original source file name for security
+-renamesourcefileattribute SourceFile
+
+-keep class com.valoser.toshikari.PersistentCookieJar$SerializableCookie { *; }
+-keep class com.valoser.toshikari.Bookmark { *; }
+-keep class com.valoser.toshikari.cache.CachedDetails { *; }
+-keep class com.valoser.toshikari.DetailContent { *; }
+-keep class com.valoser.toshikari.DetailContent$* { *; }
+-keep class com.valoser.toshikari.HistoryEntry { *; }
+-keep class ** extends androidx.work.ListenableWorker
+
+# OkHttp クラスの保持（内部実装含む）
+-keep class okhttp3.** { *; }
+-dontwarn okhttp3.**
+
+# Kotlin関連
+-dontwarn kotlin.**
+
+# Release builds should not emit verbose/debug/info logs from our code.
+# R8 strips these calls so that only warnings/errors remain and logcat stays clean.
+-assumenosideeffects class android.util.Log {
+    public static int v(java.lang.String, java.lang.String);
+    public static int v(java.lang.String, java.lang.String, java.lang.Throwable);
+    public static int d(java.lang.String, java.lang.String);
+    public static int d(java.lang.String, java.lang.String, java.lang.Throwable);
+    public static int i(java.lang.String, java.lang.String);
+    public static int i(java.lang.String, java.lang.String, java.lang.Throwable);
+}
