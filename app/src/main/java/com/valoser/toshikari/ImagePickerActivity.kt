@@ -5,14 +5,10 @@
  */
 package com.valoser.toshikari
 
-import android.Manifest
-import android.app.Activity
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.provider.MediaStore
 import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.activity.result.PickVisualMediaRequest
@@ -39,7 +35,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 // import androidx.appcompat.app.AppCompatActivity
-import androidx.core.content.ContextCompat
 import com.valoser.toshikari.ui.theme.ToshikariTheme
 import com.valoser.toshikari.ui.theme.LocalSpacing
 
@@ -48,7 +43,7 @@ import com.valoser.toshikari.ui.theme.LocalSpacing
  *
  * 概要:
  * - Android 13 (API 33) 以降: システムの Photo Picker を使用（追加のストレージ権限は不要）。
- * - Android 12L (API 32) 以下: SAF の GetContent を使用（必要に応じて READ_EXTERNAL_STORAGE を要求）。
+ * - Android 12L (API 32) 以下: SAF の GetContent を使用（追加のストレージ権限は不要）。
  * - 挙動: 起動時に自動でピッカーを開き、キャンセル時は本アクティビティを終了。
  * - 受け渡し: 取得した URI に読み取り権限を付与し、`ImageEditActivity` にインテントで渡す。
  */
@@ -78,17 +73,6 @@ class ImagePickerActivity : BaseActivity() {
             finish()
         }
     }
-
-    private val requestPermissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
-            val granted = permissions.entries.all { it.value }
-            if (granted) {
-                launchGallery()
-            } else {
-                Toast.makeText(this, "ストレージへのアクセス権限が拒否されました", Toast.LENGTH_SHORT).show()
-                finish() // 権限がない場合はこの画面を終了
-            }
-        }
 
     @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -140,22 +124,8 @@ class ImagePickerActivity : BaseActivity() {
      * 問題なければ画像ピッカーを起動する。
      */
     private fun checkAndOpenGallery() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            // Photo Picker はストレージ権限が不要
-            launchGallery()
-            return
-        }
-
-        val permissionsToRequest = mutableListOf<String>()
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-            permissionsToRequest.add(Manifest.permission.READ_EXTERNAL_STORAGE)
-        }
-
-        if (permissionsToRequest.isEmpty()) {
-            launchGallery()
-        } else {
-            requestPermissionLauncher.launch(permissionsToRequest.toTypedArray())
-        }
+        // Photo Picker / SAF どちらも追加のストレージ権限は不要
+        launchGallery()
     }
 
     /**

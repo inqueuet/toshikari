@@ -1,12 +1,6 @@
 package com.valoser.toshikari.videoeditor.presentation.ui
 
-import android.Manifest
-import android.content.Intent
-import android.content.pm.PackageManager
-import android.net.Uri
-import android.os.Build
 import android.os.Bundle
-import android.provider.MediaStore
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -18,7 +12,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
 import kotlin.math.roundToInt
 import com.valoser.toshikari.ui.theme.ToshikariTheme
 import com.valoser.toshikari.videoeditor.domain.model.EditorIntent
@@ -45,22 +38,6 @@ class EditorActivity : ComponentActivity() {
             viewModel.handleIntent(EditorIntent.CreateSession(uris))
         } else {
             Toast.makeText(this, "動画が選択されませんでした", Toast.LENGTH_SHORT).show()
-            finish()
-        }
-    }
-
-    // パーミッション要求ランチャー
-    private val requestPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { isGranted ->
-        if (isGranted) {
-            launchVideoPicker()
-        } else {
-            Toast.makeText(
-                this,
-                "動画にアクセスする権限が必要です",
-                Toast.LENGTH_LONG
-            ).show()
             finish()
         }
     }
@@ -117,32 +94,8 @@ class EditorActivity : ComponentActivity() {
      * パーミッションチェックと動画選択
      */
     private fun checkPermissionAndPick() {
-        when {
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> {
-                // Android 13以降：READ_MEDIA_VIDEO
-                if (ContextCompat.checkSelfPermission(
-                        this,
-                        Manifest.permission.READ_MEDIA_VIDEO
-                    ) == PackageManager.PERMISSION_GRANTED
-                ) {
-                    launchVideoPicker()
-                } else {
-                    requestPermissionLauncher.launch(Manifest.permission.READ_MEDIA_VIDEO)
-                }
-            }
-            else -> {
-                // Android 12以前：READ_EXTERNAL_STORAGE
-                if (ContextCompat.checkSelfPermission(
-                        this,
-                        Manifest.permission.READ_EXTERNAL_STORAGE
-                    ) == PackageManager.PERMISSION_GRANTED
-                ) {
-                    launchVideoPicker()
-                } else {
-                    requestPermissionLauncher.launch(Manifest.permission.READ_EXTERNAL_STORAGE)
-                }
-            }
-        }
+        // Video picker works without storage permissions when using Activity Result API URIs
+        launchVideoPicker()
     }
 
     /**

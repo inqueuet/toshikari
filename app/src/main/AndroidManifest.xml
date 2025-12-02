@@ -17,15 +17,6 @@
         android:name="android.permission.POST_NOTIFICATIONS"
         tools:targetApi="tiramisu" />
 
-    <!-- メディア読み取り権限（端末バージョン別に最小限を要求） -->
-    <!-- Android 13 (API 33) 以降: 画像/動画の読み取りを分離 -->
-    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
-    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
-    <!-- Android 14 (API 34) 以降: ユーザー選択メディアのみの読み取り -->
-    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
-    <!-- Android 12 (API 32) 以前: 従来の外部ストレージ読み取り（maxSdk 指定で限定） -->
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
-
     <!-- 互換性のための書き込み権限（API 28 以下でのみ有効） -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
 
