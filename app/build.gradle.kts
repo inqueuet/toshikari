@@ -38,7 +38,7 @@ android {
         applicationId = "com.valoser.toshikari"
         minSdk = 24
         targetSdk = 36 // Android API 36
-        versionCode = 3 // 内部バージョン（Play Console 配信管理で使用）
+        versionCode = 4 // 内部バージョン（Play Console 配信管理で使用）
         versionName = "1.0" // 表示バージョン
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
