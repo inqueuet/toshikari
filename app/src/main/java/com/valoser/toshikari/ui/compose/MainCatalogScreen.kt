@@ -114,6 +114,7 @@ import com.valoser.toshikari.ui.common.AppBarPosition
  * - `onManageBookmarks`: ブックマーク管理画面を開くアクション（メニューから呼び出し）。
  * - `onOpenSettings`: 設定画面を開くアクション（メニューから呼び出し）。
  * - `onOpenHistory`: 履歴画面を開くアクション（メニューから呼び出し）。
+ * - `onOpenPastSearch`: 過去スレ検索画面を開くアクション（メニューから呼び出し）。
  * - `onImageEdit`/`onBrowseLocalImages`: 画像編集／ローカル画像のメニュー操作。
  * - `onVideoEdit`: 動画編集のメニュー操作。
  * - `promptFeaturesEnabled`: プロンプト機能が有効な場合に追加メニューを表示するフラグ。
@@ -147,6 +148,7 @@ fun MainCatalogScreen(
     onManageBookmarks: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenHistory: () -> Unit,
+    onOpenPastSearch: () -> Unit,
     onImageEdit: () -> Unit,
     onVideoEdit: () -> Unit,
     onBrowseLocalImages: () -> Unit,
@@ -363,6 +365,7 @@ fun MainCatalogScreen(
                     onManageBookmarks = onManageBookmarks,
                     onSelectSortMode = onSelectSortMode,
                     onOpenHistory = onOpenHistory,
+                    onOpenPastSearch = onOpenPastSearch,
                     onOpenSettings = onOpenSettings,
                     onImageEdit = onImageEdit,
                     onVideoEdit = onVideoEdit,
@@ -694,6 +697,7 @@ private fun MoreMenu(
     onManageBookmarks: () -> Unit,
     onSelectSortMode: () -> Unit,
     onOpenHistory: () -> Unit,
+    onOpenPastSearch: () -> Unit,
     onOpenSettings: () -> Unit,
     onImageEdit: () -> Unit,
     onVideoEdit: () -> Unit,
@@ -727,6 +731,12 @@ private fun MoreMenu(
                 text = { Text("履歴") },
                 leadingIcon = { Icon(Icons.Rounded.History, contentDescription = "履歴") },
                 onClick = { expanded = false; onOpenHistory() }
+            )
+            DropdownMenuItem(
+                text = { Text("過去スレ検索") },
+                leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = "過去スレ検索") },
+                onClick = { expanded = false; onOpenPastSearch() },
+                enabled = hasSelectedBookmark
             )
 
             HorizontalDivider()

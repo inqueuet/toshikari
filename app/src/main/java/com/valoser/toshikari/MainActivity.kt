@@ -63,6 +63,7 @@ import com.valoser.toshikari.ui.compose.MainCatalogScreen
 import com.valoser.toshikari.ui.common.AppBarPosition
 import com.valoser.toshikari.ui.theme.ToshikariTheme
 import com.valoser.toshikari.NgManagerActivity
+import com.valoser.toshikari.search.PastSearchScope
 import dagger.hilt.android.AndroidEntryPoint
 import dagger.hilt.android.EntryPointAccessors
 import com.google.gson.Gson
@@ -273,6 +274,7 @@ class MainActivity : BaseActivity() {
                         },
                         onOpenSettings = { startActivity(Intent(this@MainActivity, SettingsActivity::class.java)) },
                         onOpenHistory = { startActivity(Intent(this@MainActivity, HistoryActivity::class.java)) },
+                        onOpenPastSearch = { openPastSearch() },
                         onImageEdit = { startActivity(Intent(this@MainActivity, ImagePickerActivity::class.java)) },
                         onVideoEdit = { startActivity(Intent(this@MainActivity, com.valoser.toshikari.videoeditor.presentation.ui.EditorActivity::class.java)) },
                         onBrowseLocalImages = { pickImageLauncher.launch("image/*") },
@@ -565,6 +567,17 @@ class MainActivity : BaseActivity() {
         val intent = Intent(this, DetailActivity::class.java).apply {
             putExtra(DetailActivity.EXTRA_URL, item.detailUrl)
             putExtra(DetailActivity.EXTRA_TITLE, item.title)
+        }
+        startActivity(intent)
+    }
+
+    /** 現在のカタログURLをもとに過去スレ検索画面を開く。 */
+    private fun openPastSearch() {
+        val intent = Intent(this, PastSearchActivity::class.java)
+        val scope = PastSearchScope.fromCatalogUrl(currentSelectedUrl)
+        scope?.let {
+            intent.putExtra(PastSearchActivity.EXTRA_SERVER, it.server)
+            intent.putExtra(PastSearchActivity.EXTRA_BOARD, it.board)
         }
         startActivity(intent)
     }

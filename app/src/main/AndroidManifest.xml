@@ -104,6 +104,11 @@
         <activity android:name=".NgManagerActivity"
             android:label="NG管理"
             android:exported="false" />
+        <!-- 過去スレ検索画面（外部公開なし） -->
+        <activity
+            android:name=".PastSearchActivity"
+            android:label="過去スレ検索"
+            android:exported="false" />
         <!-- スレ監視キーワード管理画面（外部公開なし） -->
         <activity
             android:name=".ThreadWatchManagerActivity"
