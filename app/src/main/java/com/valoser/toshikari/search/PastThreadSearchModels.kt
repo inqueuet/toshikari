@@ -1,5 +1,6 @@
 package com.valoser.toshikari.search
 
+import androidx.annotation.Keep
 import java.net.URL
 
 /**
@@ -29,6 +30,7 @@ data class PastSearchScope(
 }
 
 /** API の1件分の検索結果。 */
+@Keep // Gson でリフレクション生成するため R8 最適化から保護
 data class PastThreadSearchResult(
     val threadId: String? = null,
     val server: String? = null,
@@ -40,6 +42,7 @@ data class PastThreadSearchResult(
 )
 
 /** API レスポンス全体。 */
+@Keep // Gson でリフレクション生成するため R8 最適化から保護
 data class PastThreadSearchResponse(
     val query: String? = null,
     val filter: String? = null,
