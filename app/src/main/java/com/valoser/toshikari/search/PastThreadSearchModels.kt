@@ -39,6 +39,9 @@ data class PastThreadSearchResult(
     val htmlUrl: String = "",
     val thumbUrl: String? = null,
     val createdAt: String? = null,
+    val finalizedAt: String? = null,
+    val uploadedAt: String? = null,
+    val status: String? = null,
 )
 
 /** API レスポンス全体。 */

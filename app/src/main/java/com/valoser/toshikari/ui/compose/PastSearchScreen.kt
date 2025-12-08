@@ -228,10 +228,17 @@ private fun PastSearchResultRow(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
-            val meta = listOfNotNull(
-                listOfNotNull(result.server, result.board).joinToString("/").takeIf { it.isNotBlank() },
-                result.createdAt
-            ).joinToString(" ・ ")
+            val metaParts = buildList {
+                listOfNotNull(result.server, result.board)
+                    .joinToString("/")
+                    .takeIf { it.isNotBlank() }
+                    ?.let { add(it) }
+                result.status?.takeIf { it.isNotBlank() }?.let { add("status: $it") }
+                result.createdAt?.takeIf { it.isNotBlank() }?.let { add("created: $it") }
+                result.uploadedAt?.takeIf { it.isNotBlank() }?.let { add("uploaded: $it") }
+                result.finalizedAt?.takeIf { it.isNotBlank() }?.let { add("finalized: $it") }
+            }
+            val meta = metaParts.joinToString(" ・ ")
             if (meta.isNotBlank()) {
                 Spacer(modifier = Modifier.height(spacing.xs))
                 Text(
