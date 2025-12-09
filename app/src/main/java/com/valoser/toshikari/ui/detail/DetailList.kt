@@ -560,21 +560,32 @@ fun DetailListCompose(
                         applySodaneDisplay(padTokensForSpacingCached(plain), sodaneCounts, selfResNum)
                     }
                     // クリック可能領域（No./引用/ID/URL/ファイル名/そうだね/検索ハイライト）を付与
-                    val annotated = remember(displayText, searchQuery, threadTitle, myPostNumbers) { buildAnnotatedFromText(displayText, searchQuery, threadTitle, myPostNumbers) }
+                    val colors = androidx.compose.material3.MaterialTheme.colorScheme
+                    val annotated = remember(displayText, searchQuery, threadTitle, myPostNumbers, colors) {
+                        buildAnnotatedFromText(
+                            displayText,
+                            searchQuery,
+                            threadTitle,
+                            myPostNumbers,
+                            // No.（.cno）とリンク: #800000（下線あり）
+                            clickableColor = Color(0xFF800000),
+                            selfPostColor = colors.secondary,
+                            // 引用背景: 不要（ふたばは文字色のみ）
+                            quoteColor = Color(0xFF789922),
+                            // 日時などは本文色に合わせ、Name のみ緑、無念のみ赤で上書き
+                            headerColor = colors.onSurface,
+                            munenColor = Color(0xFFCC1105),
+                            nameColor = Color(0xFF117743),
+                            // レス範囲全体のテキスト色
+                            bodyTextColor = Color(0xFF800000)
+                        )
+                    }
                     var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
                     androidx.compose.foundation.layout.Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            // ヘッダー行（最初の行）の背景色を設定して視覚的に分離
-                            .background(
-                                if (displayText.trim().lines().firstOrNull()?.let { firstLine ->
-                                    Regex("""\d{2}/\d{2}/\d{2}\(\S+\)\d{2}:\d{2}:\d{2}""").containsMatchIn(firstLine)
-                                } == true) {
-                                    androidx.compose.material3.MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.3f)
-                                } else {
-                                    androidx.compose.ui.graphics.Color.Transparent
-                                }
-                            )
+                            // ふたば風: レス背景 (.rtd) #F0E0D6
+                            .background(Color(0xFFF0E0D6))
                             // タッチ領域を広げるため、最小タッチターゲット高さ（48dp）を保証
                             .sizeIn(minHeight = 48.dp)
                             // 短押しは子の ClickableText に渡す。ここでは「長押しのみ」を本文引用として扱う。
@@ -1149,8 +1160,27 @@ private fun extractBodyOnlyPlain(plain: String): String {
  * - 検索語は背景色でハイライト。
  * - 自レス番号は強調色で表示。
  */
-private fun buildAnnotatedFromText(text: String, highlight: String?, threadTitle: String?, myPostNumbers: Set<String> = emptySet()): AnnotatedString = buildAnnotatedString {
+private fun buildAnnotatedFromText(
+    text: String,
+    highlight: String?,
+    threadTitle: String?,
+    myPostNumbers: Set<String> = emptySet(),
+    clickableColor: Color,
+    selfPostColor: Color,
+    quoteColor: Color = Color(0xFF789922),
+    headerColor: Color,
+    munenColor: Color = Color(0xFFCC1105),
+    nameColor: Color = Color(0xFF117743),
+    bodyTextColor: Color
+): AnnotatedString = buildAnnotatedString {
     append(text)
+
+    // まず全体にデフォルトのテキスト色（#800000）を適用
+    addStyle(
+        SpanStyle(color = bodyTextColor),
+        0,
+        text.length
+    )
 
     // ヘッダー行を識別（日付時刻パターンを含む行のみ、または数字+無念+Name等のメタデータを含む最初の行のみ）
     fun isHeaderLine(line: String, lineIndex: Int): Boolean {
@@ -1171,9 +1201,6 @@ private fun buildAnnotatedFromText(text: String, highlight: String?, threadTitle
         return false
     }
 
-    // クリック可能要素用の色（Material3のプライマリ色）
-    val clickableColor = Color(0xFF6750A4) // Material3 Primary color
-
     // No.1234 pattern（ドット任意・全角ドット・空白許容）
     val resRegex = Regex("""(?i)No[.\uFF0E]?\s*(\d+)""")
     resRegex.findAll(text).forEach { m ->
@@ -1190,15 +1217,53 @@ private fun buildAnnotatedFromText(text: String, highlight: String?, threadTitle
         val trimmedLine = line.trimStart()
         val isQuoteLine = trimmedLine.startsWith(">") || trimmedLine.startsWith("＞")
         if (isHeaderLine(line, lineIndex) || isQuoteLine) {
+            // ヘッダー行内の特定要素に色を適用
+            if (isHeaderLine(line, lineIndex)) {
+                // 「無念」は赤系、「Name としあき」は緑系で上書き
+                // （ヘッダー全体は既にデフォルトの#800000が適用されている）
+                val muneIdx = line.indexOf("無念")
+                if (muneIdx >= 0) {
+                    val globalStart = lineStart + muneIdx
+                    addStyle(
+                        SpanStyle(color = munenColor, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
+                        globalStart,
+                        globalStart + 2
+                    )
+                }
+                val nameIdx = line.indexOf("Name")
+                if (nameIdx >= 0) {
+                    val afterName = nameIdx + "Name".length
+                    // Name の後ろに続く実際の名前部分を日付パターン前まで取得
+                    // 日付パターン: 25/12/09(火)21:12:19 のような形式
+                    val tail = line.substring(afterName)
+                    // 名前部分を抽出（日付パターンの前まで）
+                    // 日付パターン: \d{2}/\d{2}/\d{2}\(.\)\d{2}:\d{2}:\d{2}
+                    val datePattern = Regex("""\d{2}/\d{2}/\d{2}\([^)]+\)\d{2}:\d{2}:\d{2}""")
+                    val dateMatch = datePattern.find(tail)
+                    val nameEndPos = dateMatch?.range?.first ?: tail.length
+                    val nameText = tail.substring(0, nameEndPos).trim()
+
+                    if (nameText.isNotBlank()) {
+                        // 先頭の空白を除いた位置を計算
+                        val trimmedStart = tail.indexOf(nameText)
+                        val globalStart = lineStart + afterName + trimmedStart
+                        addStyle(
+                            SpanStyle(color = nameColor, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
+                            globalStart,
+                            globalStart + nameText.length
+                        )
+                    }
+                }
+            }
             val num = m.groupValues[1]
             // 自レス番号なら強調色、それ以外はプライマリ色
             if (myPostNumbers.contains(num)) {
                 addStyle(SpanStyle(
                     textDecoration = TextDecoration.Underline,
-                    color = Color(0xFF4CAF50), // 緑色で強調
-                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
-                ), m.range.first, m.range.last + 1)
-            } else {
+                            color = selfPostColor, // 自レスは緑寄りの強調色
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                        ), m.range.first, m.range.last + 1)
+                    } else {
                 addStyle(SpanStyle(
                     textDecoration = TextDecoration.Underline,
                     color = clickableColor,
@@ -1209,7 +1274,7 @@ private fun buildAnnotatedFromText(text: String, highlight: String?, threadTitle
         }
     }
     // 引用行: 行頭の空白や全角＞を許容し、タグには正規化したトークンを渡す
-    // 視認性向上のため色と背景色を追加
+    // ふたば風: 文字色のみ（#789922）、背景色なし
     val lineRegex = Regex("^(?:[\\t \\u3000])*[>＞]+[^\\n]*", RegexOption.MULTILINE)
     lineRegex.findAll(text).forEach { m ->
         val tokenRaw = m.value
@@ -1217,10 +1282,8 @@ private fun buildAnnotatedFromText(text: String, highlight: String?, threadTitle
         val start = m.range.first + (m.value.length - tokenRaw.trimStart().length)
         val end = m.range.last + 1
         addStyle(SpanStyle(
-            textDecoration = TextDecoration.Underline,
-            color = clickableColor,
-            background = Color(0x1A9C27B0), // 薄い紫色の背景
-            fontWeight = androidx.compose.ui.text.font.FontWeight.Medium
+            color = quoteColor, // ふたばの引用色 #789922
+            fontWeight = androidx.compose.ui.text.font.FontWeight.Normal
         ), start, end)
         addStringAnnotation(tag = "quote", annotation = token, start = start, end = end)
     }
@@ -1324,7 +1387,7 @@ private fun buildAnnotatedFromText(text: String, highlight: String?, threadTitle
                     sodaneRegex.find(searchRange)?.let { sodaneMatch ->
                         val s = lineStart + afterNoStartInLine + sodaneMatch.range.first
                         val e = lineStart + afterNoStartInLine + sodaneMatch.range.last + 1
-                        addStyle(SpanStyle(textDecoration = TextDecoration.Underline), s, e)
+                        // ふたば風: そうだねには下線不要
                         addStringAnnotation("sodane", "1", s, e)
                     }
                 }

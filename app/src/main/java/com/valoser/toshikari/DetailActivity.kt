@@ -22,6 +22,8 @@ import androidx.lifecycle.Observer
  
  
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.MaterialTheme
  
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -44,6 +46,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
+import com.valoser.toshikari.ui.theme.FutabaDarkColorScheme
+import com.valoser.toshikari.ui.theme.FutabaLightColorScheme
 import com.valoser.toshikari.ui.theme.ToshikariTheme
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -189,129 +193,139 @@ class DetailActivity : BaseActivity() {
         topBarPositionState.value = getTopBarPosition()
         setContent {
             ToshikariTheme(expressive = true) {
-                val showAds by adsEnabledFlow.collectAsState()
-                // 自レス番号を状態として保持（返信成功時に更新）
-                var myPostNumbers by remember { mutableStateOf(emptySet<String>()) }
-                LaunchedEffect(currentUrl) {
-                    myPostNumbers = currentUrl?.let { AppPreferences.getMyPostNumbers(this@DetailActivity, it) } ?: emptySet()
+                val isDark = isSystemInDarkTheme()
+                val futabaScheme = if (isDark) FutabaDarkColorScheme else FutabaLightColorScheme
+                val typography = MaterialTheme.typography
+                val shapes = MaterialTheme.shapes
+                MaterialTheme(
+                    colorScheme = futabaScheme,
+                    typography = typography,
+                    shapes = shapes
+                ) {
+                    val showAds by adsEnabledFlow.collectAsState()
+                    // 自レス番号を状態として保持（返信成功時に更新）
+                    var myPostNumbers by remember { mutableStateOf(emptySet<String>()) }
+                    LaunchedEffect(currentUrl) {
+                        myPostNumbers = currentUrl?.let { AppPreferences.getMyPostNumbers(this@DetailActivity, it) } ?: emptySet()
+                    }
+                    DetailScreenScaffold(
+                        title = toolbarTitleText,
+                        appBarPosition = topBarPositionState.value,
+                        onBack = {
+                            onBackPressedDispatcher.onBackPressed()
+                        },
+                        onReply = { launchReplyActivity("") },
+                        onReload = { reloadDetails() },
+                        onOpenNg = { openNgManager() },
+                        onOpenMedia = { },
+                        promptFeaturesEnabled = promptFetchEnabledState.value,
+                        lowBandwidthMode = lowBandwidthModeState.value,
+                        // 画像編集: 端末の画像を選んで `ImageEditActivity` へ渡すフローの起点
+                        onImageEdit = { startActivity(Intent(this@DetailActivity, ImagePickerActivity::class.java)) },
+                        onSodaneClick = { resNum -> viewModel.postSodaNe(resNum) },
+                        onDeletePost = { resNum, onlyImage ->
+                            val threadUrl = currentUrl ?: return@DetailScreenScaffold
+                            val boardBasePath = threadUrl.substringBeforeLast("/").substringBeforeLast("/") + "/"
+                            val postUrl = boardBasePath + "futaba.php?guid=on"
+                            val pwd = AppPreferences.getPwd(this)
+                            viewModel.deletePost(
+                                postUrl = postUrl,
+                                referer = threadUrl,
+                                resNum = resNum,
+                                pwd = pwd ?: "",
+                                onlyImage = onlyImage,
+                            )
+                        },
+                        onSubmitSearch = { q ->
+                            lifecycleScope.launch(Dispatchers.Default) {
+                                recentSearchStore.add(q)
+                            }
+                            viewModel.performSearch(q)
+                        },
+                        onDebouncedSearch = { q -> viewModel.performSearch(q) },
+                        onClearSearch = { viewModel.clearSearch() },
+                        onReapplyNgFilter = { viewModel.reapplyNgFilter() },
+                        searchStateFlow = viewModel.searchState,
+                        onSearchPrev = { viewModel.navigateToPrevHit() },
+                        onSearchNext = { viewModel.navigateToNextHit() },
+                        bottomOffsetPxFlow = bottomOffsetFlow,
+                        searchActiveFlow = searchBarActiveFlow,
+                        onSearchActiveChange = { active -> searchBarActiveFlowInternal.value = active },
+                        recentSearchesFlow = recentSearchStore.items,
+                        showAds = showAds,
+                        adUnitId = adUnitId,
+                        onBottomPaddingChange = { h -> bottomOffsetFlowInternal.value = h },
+                        // Compose リストのスクロール状態を保存/復元
+                        initialScrollIndex = initialIndexForCompose,
+                        initialScrollOffset = initialOffsetForCompose,
+                        initialScrollAnchorId = initialAnchorForRestore,
+                        onSaveScroll = { pos, off, anchorId ->
+                            val url = currentUrl ?: return@DetailScreenScaffold
+                            val key = UrlNormalizer.threadKey(url)
+                            saveScrollJob?.cancel()
+                            saveScrollJob = lifecycleScope.launch(Dispatchers.IO) {
+                                scrollStore.saveScrollState(key, pos, off, anchorId)
+                            }
+                        },
+                        itemsFlow = viewModel.displayContent,
+                        plainTextCacheFlow = viewModel.plainTextCache,
+                        onEnsurePlainTextCache = { list -> viewModel.ensurePlainTextCachedFor(list) },
+                        plainTextOf = { t -> viewModel.plainTextOf(t) },
+                        currentQueryFlow = viewModel.currentQuery,
+                        getSodaneState = { rn -> viewModel.getSodaNeState(rn) },
+                        // Compose側で引用一覧を表示するため、ここでは何もしない
+                        onQuoteClick = null,
+                        onResNumClick = { _, resBody ->
+                            if (resBody.isNotEmpty()) launchReplyActivity(resBody)
+                        },
+                        onResNumConfirmClick = { _ -> },
+                        onBodyClick = { quotedBody -> launchReplyActivity(quotedBody) },
+                        // Compose側でNG追加ダイアログを表示するため、ここでは何もしない
+                        onAddNgFromBody = { _ -> },
+                        onThreadEndTimeClick = { reloadDetails() },
+                        onImageLoaded = {
+                            // 処理なし（スクロール整列は Compose 側で対応）
+                        },
+                        isRefreshingFlow = viewModel.isLoading,
+                        onVisibleMaxOrdinal = { ord -> markViewedByOrdinal(ord) },
+                        sodaneUpdates = viewModel.sodaneUpdate,
+                        threadUrl = currentUrl,
+                        myPostNumbers = myPostNumbers,
+                        onNearListEnd = {
+                            val url = currentUrl ?: return@DetailScreenScaffold
+                            if (isRequestingMore) return@DetailScreenScaffold
+                            // Compose側でファストスクロール中は抑制済み
+                            isRequestingMore = true
+                            suppressNextRestore = true
+                            val postCount = countPostItems()
+                            viewModel.checkForUpdates(url, postCount) { _ ->
+                                isRequestingMore = false
+                            }
+                        },
+                        onDownloadImages = { urls -> viewModel.downloadImages(urls) },
+                        onDownloadImagesSkipExisting = { urls -> viewModel.downloadImagesSkipExisting(urls) },
+                        downloadProgressFlow = viewModel.downloadProgress,
+                        onCancelDownload = { viewModel.cancelDownload() },
+                        downloadConflictFlow = viewModel.downloadConflictRequests,
+                        onDownloadConflictSkip = { id -> viewModel.confirmDownloadSkip(id) },
+                        onArchiveThread = { viewModel.archiveThread(toolbarTitleText) },
+                        archiveProgressFlow = viewModel.archiveProgress,
+                        onCancelArchive = { viewModel.cancelArchive() },
+                        // TTS音声読み上げ
+                        ttsStateFlow = viewModel.ttsState,
+                        ttsCurrentResNumFlow = viewModel.ttsCurrentResNum,
+                        onTtsStart = { viewModel.startTtsReading() },
+                        onTtsPause = { viewModel.pauseTts() },
+                        onTtsResume = { viewModel.resumeTts() },
+                        onTtsStop = { viewModel.stopTts() },
+                        onTtsSkipNext = { viewModel.skipNextTts() },
+                        onTtsSkipPrevious = { viewModel.skipPreviousTts() },
+                        onTtsSetSpeed = { rate -> viewModel.setTtsSpeechRate(rate) },
+                        onDownloadConflictOverwrite = { id -> viewModel.confirmDownloadOverwrite(id) },
+                        onDownloadConflictCancel = { id -> viewModel.cancelDownloadRequest(id) },
+                        promptLoadingIdsFlow = viewModel.promptLoadingIds
+                    )
                 }
-                DetailScreenScaffold(
-                    title = toolbarTitleText,
-                    appBarPosition = topBarPositionState.value,
-                    onBack = {
-                        onBackPressedDispatcher.onBackPressed()
-                    },
-                    onReply = { launchReplyActivity("") },
-                    onReload = { reloadDetails() },
-                    onOpenNg = { openNgManager() },
-                    onOpenMedia = { },
-                    promptFeaturesEnabled = promptFetchEnabledState.value,
-                    lowBandwidthMode = lowBandwidthModeState.value,
-                    // 画像編集: 端末の画像を選んで `ImageEditActivity` へ渡すフローの起点
-                    onImageEdit = { startActivity(Intent(this@DetailActivity, ImagePickerActivity::class.java)) },
-                    onSodaneClick = { resNum -> viewModel.postSodaNe(resNum) },
-                    onDeletePost = { resNum, onlyImage ->
-                        val threadUrl = currentUrl ?: return@DetailScreenScaffold
-                        val boardBasePath = threadUrl.substringBeforeLast("/").substringBeforeLast("/") + "/"
-                        val postUrl = boardBasePath + "futaba.php?guid=on"
-                        val pwd = AppPreferences.getPwd(this)
-                        viewModel.deletePost(
-                            postUrl = postUrl,
-                            referer = threadUrl,
-                            resNum = resNum,
-                            pwd = pwd ?: "",
-                            onlyImage = onlyImage,
-                        )
-                    },
-                    onSubmitSearch = { q ->
-                        lifecycleScope.launch(Dispatchers.Default) {
-                            recentSearchStore.add(q)
-                        }
-                        viewModel.performSearch(q)
-                    },
-                    onDebouncedSearch = { q -> viewModel.performSearch(q) },
-                    onClearSearch = { viewModel.clearSearch() },
-                    onReapplyNgFilter = { viewModel.reapplyNgFilter() },
-                    searchStateFlow = viewModel.searchState,
-                    onSearchPrev = { viewModel.navigateToPrevHit() },
-                    onSearchNext = { viewModel.navigateToNextHit() },
-                    bottomOffsetPxFlow = bottomOffsetFlow,
-                    searchActiveFlow = searchBarActiveFlow,
-                    onSearchActiveChange = { active -> searchBarActiveFlowInternal.value = active },
-                    recentSearchesFlow = recentSearchStore.items,
-                    showAds = showAds,
-                    adUnitId = adUnitId,
-                    onBottomPaddingChange = { h -> bottomOffsetFlowInternal.value = h },
-                    // Compose リストのスクロール状態を保存/復元
-                    initialScrollIndex = initialIndexForCompose,
-                    initialScrollOffset = initialOffsetForCompose,
-                    initialScrollAnchorId = initialAnchorForRestore,
-                    onSaveScroll = { pos, off, anchorId ->
-                        val url = currentUrl ?: return@DetailScreenScaffold
-                        val key = UrlNormalizer.threadKey(url)
-                        saveScrollJob?.cancel()
-                        saveScrollJob = lifecycleScope.launch(Dispatchers.IO) {
-                            scrollStore.saveScrollState(key, pos, off, anchorId)
-                        }
-                    },
-                    itemsFlow = viewModel.displayContent,
-                    plainTextCacheFlow = viewModel.plainTextCache,
-                    onEnsurePlainTextCache = { list -> viewModel.ensurePlainTextCachedFor(list) },
-                    plainTextOf = { t -> viewModel.plainTextOf(t) },
-                    currentQueryFlow = viewModel.currentQuery,
-                    getSodaneState = { rn -> viewModel.getSodaNeState(rn) },
-                    // Compose側で引用一覧を表示するため、ここでは何もしない
-                    onQuoteClick = null,
-                    onResNumClick = { _, resBody ->
-                        if (resBody.isNotEmpty()) launchReplyActivity(resBody)
-                    },
-                    onResNumConfirmClick = { _ -> },
-                    onBodyClick = { quotedBody -> launchReplyActivity(quotedBody) },
-                    // Compose側でNG追加ダイアログを表示するため、ここでは何もしない
-                    onAddNgFromBody = { _ -> },
-                    onThreadEndTimeClick = { reloadDetails() },
-                    onImageLoaded = {
-                        // 処理なし（スクロール整列は Compose 側で対応）
-                    },
-                    isRefreshingFlow = viewModel.isLoading,
-                    onVisibleMaxOrdinal = { ord -> markViewedByOrdinal(ord) },
-                    sodaneUpdates = viewModel.sodaneUpdate,
-                    threadUrl = currentUrl,
-                    myPostNumbers = myPostNumbers,
-                    onNearListEnd = {
-                        val url = currentUrl ?: return@DetailScreenScaffold
-                        if (isRequestingMore) return@DetailScreenScaffold
-                        // Compose側でファストスクロール中は抑制済み
-                        isRequestingMore = true
-                        suppressNextRestore = true
-                        val postCount = countPostItems()
-                        viewModel.checkForUpdates(url, postCount) { _ ->
-                            isRequestingMore = false
-                        }
-                    },
-                    onDownloadImages = { urls -> viewModel.downloadImages(urls) },
-                    onDownloadImagesSkipExisting = { urls -> viewModel.downloadImagesSkipExisting(urls) },
-                    downloadProgressFlow = viewModel.downloadProgress,
-                    onCancelDownload = { viewModel.cancelDownload() },
-                    downloadConflictFlow = viewModel.downloadConflictRequests,
-                    onDownloadConflictSkip = { id -> viewModel.confirmDownloadSkip(id) },
-                    onArchiveThread = { viewModel.archiveThread(toolbarTitleText) },
-                    archiveProgressFlow = viewModel.archiveProgress,
-                    onCancelArchive = { viewModel.cancelArchive() },
-                    // TTS音声読み上げ
-                    ttsStateFlow = viewModel.ttsState,
-                    ttsCurrentResNumFlow = viewModel.ttsCurrentResNum,
-                    onTtsStart = { viewModel.startTtsReading() },
-                    onTtsPause = { viewModel.pauseTts() },
-                    onTtsResume = { viewModel.resumeTts() },
-                    onTtsStop = { viewModel.stopTts() },
-                    onTtsSkipNext = { viewModel.skipNextTts() },
-                    onTtsSkipPrevious = { viewModel.skipPreviousTts() },
-                    onTtsSetSpeed = { rate -> viewModel.setTtsSpeechRate(rate) },
-                    onDownloadConflictOverwrite = { id -> viewModel.confirmDownloadOverwrite(id) },
-                    onDownloadConflictCancel = { id -> viewModel.cancelDownloadRequest(id) },
-                    promptLoadingIdsFlow = viewModel.promptLoadingIds
-                )
             }
         }
 
