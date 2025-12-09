@@ -75,6 +75,8 @@ import kotlinx.coroutines.flow.collectLatest
 import android.view.Choreographer
 import kotlin.coroutines.resume
 import java.net.URL
+import javax.inject.Inject
+import android.net.Uri
 
 @AndroidEntryPoint
 /**
@@ -87,6 +89,7 @@ import java.net.URL
  * - Futaba の catset（カタログ表示設定）を板単位で適用し、3日間の TTL で再適用を抑制。設定画面で指定したcx/cy/cl値を使用。
  * - 端末内画像のメタデータ抽出→表示（ImageDisplayActivity）にも対応。
  * - TopBar: Compose 側 (`MainCatalogScreen`) でタイトル非表示、サブタイトル（選択中ブックマーク名）のみを大きめに表示。
+ * - アプリ起動時にバージョンチェックを行い、新しいバージョンがあればダイアログで通知。
  *
  * 関連:
  * - UI: `ui.compose.MainCatalogScreen`
@@ -94,6 +97,9 @@ import java.net.URL
  */
 class MainActivity : BaseActivity() {
     private val viewModel: MainViewModel by viewModels()
+
+    @Inject
+    lateinit var appUpdateChecker: AppUpdateChecker
     private var currentSelectedUrl: String? = null
     // 検索クエリ（Compose 側で双方向バインド）
     private val queryState = mutableStateOf("")
@@ -214,12 +220,45 @@ class MainActivity : BaseActivity() {
                 val hasSelectedBookmark = hasSelectedBookmarkState.value
                 var showBookmarkDialog by rememberSaveable { mutableStateOf(false) }
                 var showSortModeDialog by rememberSaveable { mutableStateOf(false) }
+                var updateInfo by remember { mutableStateOf<AppUpdateChecker.UpdateInfo?>(null) }
+
+                // アプリ起動時にバージョンチェック（毎回実行）
+                LaunchedEffect(Unit) {
+                    val info = withContext(Dispatchers.IO) {
+                        appUpdateChecker.checkForUpdatesWithDialog(force = true)
+                    }
+                    updateInfo = info
+                }
 
                 // 自動表示を削除し、ユーザーが明示的にブックマーク選択を行う方式に変更
 
                 LaunchedEffect(errorMessage) {
                     val msg = errorMessage
                     if (!msg.isNullOrBlank()) snackbarHostState.showSnackbar(msg)
+                }
+
+                // 更新通知ダイアログ（シンプル版）
+                if (updateInfo != null) {
+                    AlertDialog(
+                        onDismissRequest = {
+                            updateInfo = null
+                        },
+                        title = { androidx.compose.material3.Text("お知らせ") },
+                        text = {
+                            androidx.compose.material3.Text(
+                                "新しいバージョン ${updateInfo!!.version} が利用可能です。"
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(
+                                onClick = {
+                                    updateInfo = null
+                                }
+                            ) {
+                                androidx.compose.material3.Text("OK")
+                            }
+                        }
+                    )
                 }
 
                 Box {

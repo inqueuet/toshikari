@@ -25,7 +25,7 @@ import okhttp3.Request
 import java.util.concurrent.TimeUnit
 
 /**
- * GitHub の最新リリースを確認し、アプリに新しいバージョンがある場合は通知するヘルパー。
+ * GitHub の最新リリースを確認し、アプリに新しいバージョンがある場合は通知またはダイアログで表示するヘルパー。
  *
  * - 一定間隔（既定: 12 時間）で GitHub Releases API をポーリング。
  * - 取得した `tag_name` を端末にインストールされているアプリのバージョン名と比較し、新しい場合のみ通知。
@@ -39,7 +39,47 @@ class AppUpdateChecker @Inject constructor(
     private val gson = Gson()
 
     /**
-     * GitHub リリースを確認し、必要に応じて通知する。
+     * 最新バージョン情報を取得する（ダイアログ表示用）。
+     *
+     * @param force true の場合はチェック間隔に関係なく即時実行。
+     * @return 新しいバージョンがある場合は UpdateInfo、なければ null
+     */
+    suspend fun checkForUpdatesWithDialog(force: Boolean = false): UpdateInfo? {
+        val now = System.currentTimeMillis()
+        if (!force && now - AppPreferences.getLastReleaseCheckAt(context) < CHECK_INTERVAL_MS) {
+            return null
+        }
+        AppPreferences.setLastReleaseCheckAt(context, now)
+
+        val release = fetchLatestRelease() ?: return null
+        val latestVersion = normalizeVersion(release.tagName) ?: return null
+        val currentVersionRaw = currentVersionName() ?: return null
+        val currentVersion = normalizeVersion(currentVersionRaw) ?: currentVersionRaw
+
+        if (!isNewerVersion(latestVersion, currentVersion)) {
+            return null
+        }
+        if (AppPreferences.getLastNotifiedVersion(context) == latestVersion) {
+            return null
+        }
+
+        return UpdateInfo(
+            version = latestVersion,
+            name = release.name,
+            url = release.htmlUrl,
+            tagName = release.tagName
+        )
+    }
+
+    /**
+     * 更新通知済みとしてマークする。
+     */
+    fun markAsNotified(version: String) {
+        AppPreferences.setLastNotifiedVersion(context, version)
+    }
+
+    /**
+     * GitHub リリースを確認し、必要に応じて通知する（従来の通知方式）。
      *
      * @param force true の場合はチェック間隔に関係なく即時実行。
      */
@@ -206,6 +246,16 @@ class AppUpdateChecker @Inject constructor(
         val tagName: String,
         val name: String?,
         val htmlUrl: String,
+    )
+
+    /**
+     * ダイアログ表示用の更新情報。
+     */
+    data class UpdateInfo(
+        val version: String,
+        val name: String?,
+        val url: String,
+        val tagName: String
     )
 
     companion object {
