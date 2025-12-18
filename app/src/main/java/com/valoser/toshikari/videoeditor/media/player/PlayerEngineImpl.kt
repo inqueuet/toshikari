@@ -134,7 +134,7 @@ class PlayerEngineImpl @Inject constructor(
         // ★ session.videoClipsの順序はMediaItemsの追加順(position順)と一致している必要がある
         // prepare()で追加した順序と同じものを使用(position順ソート)
         val clips = ensureSortedClips(session)
-        
+
         // タイムライン上の位置からクリップを検索
         val index = clips.indexOfFirst { c ->
             val start = c.position
@@ -150,8 +150,14 @@ class PlayerEngineImpl @Inject constructor(
         }
 
         val clip = clips[index]
-        val posInWindow = (timeMs - clip.position)
-            .coerceIn(0L, (clip.duration - 1).coerceAtLeast(0L))
+        // タイムライン上の相対位置をウィンドウ内位置に変換（速度を考慮）
+        // 例: speed=2.0の場合、タイムライン上の500msはウィンドウ内では1000msに相当
+        val timelineRelativePos = (timeMs - clip.position)
+        val posInWindow = if (clip.speed > 0f) {
+            (timelineRelativePos * clip.speed).toLong()
+        } else {
+            timelineRelativePos
+        }.coerceIn(0L, ((clip.endTime - clip.startTime) - 1).coerceAtLeast(0L))
 
         player.seekTo(index, posInWindow)
         _currentPosition.value = timeMs
@@ -183,18 +189,27 @@ class PlayerEngineImpl @Inject constructor(
         val clips = ensureSortedClips(session)
 
         val currentClip = clips.getOrNull(windowIndex)
-        
+
         if (currentClip == null) {
             // フォールバック
             return player.currentPosition
         }
 
-        // タイムライン上の絶対位置 = クリップの開始位置 + ウィンドウ内位置
-        return currentClip.position + positionInWindow
+        // タイムライン上の絶対位置 = クリップの開始位置 + (ウィンドウ内位置 / 速度)
+        // ExoPlayerは通常速度で再生しているため、速度調整を適用する必要がある
+        // 例: speed=2.0の場合、ExoPlayerが1000ms進んでも、タイムライン上は500msしか進まない
+        val adjustedPosition = if (currentClip.speed > 0f) {
+            (positionInWindow / currentClip.speed).toLong()
+        } else {
+            positionInWindow
+        }
+
+        return currentClip.position + adjustedPosition
     }
 
     private companion object {
-        private const val POSITION_UPDATE_INTERVAL_MS = 33L
+        // 60fpsで位置を更新して滑らかな表示を実現
+        private const val POSITION_UPDATE_INTERVAL_MS = 16L
     }
 
     private fun ensureSortedClips(session: EditorSession): List<VideoClip> {

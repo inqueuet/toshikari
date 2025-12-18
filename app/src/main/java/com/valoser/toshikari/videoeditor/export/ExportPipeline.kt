@@ -480,7 +480,8 @@ private class VideoProcessor(
                                 if (sampleSize < 0) {
                                     isInputDone = true
                                 } else {
-                                    val presentationTimeUs = ((sampleTime - clip.startTime * 1000) / clip.speed).toLong()
+                                    // デコーダーには元のPTSを渡す(speedで割らない)
+                                    val presentationTimeUs = (sampleTime - clip.startTime * 1000)
                                     decoder.queueInputBuffer(inputBufferIndex, 0, sampleSize, presentationTimeUs, 0)
                                     extractor.advance()
                                 }
@@ -498,7 +499,8 @@ private class VideoProcessor(
                             Log.d(TAG, "processClip: Decoder reached end of stream")
                         }
                         val doRender = reusableBufferInfo.size != 0
-                        val adjustedPts = reusableBufferInfo.presentationTimeUs + presentationTimeOffsetUs
+                        // エンコーダーへのPTSでspeed調整を行う
+                        val adjustedPts = ((reusableBufferInfo.presentationTimeUs / clip.speed).toLong()) + presentationTimeOffsetUs
                         reusableBufferInfo.presentationTimeUs = adjustedPts
 
                         if (doRender) {
@@ -1056,8 +1058,8 @@ private class AudioProcessor(
                             if (sampleSize < 0) {
                                 isInputDone = true
                             } else {
-                                val presentationTimeUs =
-                                    ((sampleTime - clip.startTime * 1000) / clip.speed).toLong()
+                                // デコーダーには元のPTSを渡す(speedで割らない)
+                                val presentationTimeUs = (sampleTime - clip.startTime * 1000)
                                 decoder.queueInputBuffer(
                                     inputBufferIndex,
                                     0,
@@ -1100,11 +1102,9 @@ private class AudioProcessor(
                             )
 
                             // ★ エンコーダ向けPTSを「これまでにエンコーダへ渡した総サンプル数」から再計算
-                            // 注意: 長時間動画では累積誤差が発生する可能性がある
-                            // より精密な計算が必要な場合は、各クリップの開始時にリセットするか、
-                            // 元のPTSを基準とした相対計算を行うこと
+                            // speed調整も考慮する: speed=2.0の場合、PTSの進みが2倍速になる
                             val ptsUsForEncoder =
-                                presentationTimeOffsetUs + (clipOutSamples * 1_000_000L / targetSampleRate)
+                                presentationTimeOffsetUs + ((clipOutSamples * 1_000_000L / targetSampleRate) / clip.speed).toLong()
 
                             reusableEncoderBufferInfo.apply {
                                 set(
