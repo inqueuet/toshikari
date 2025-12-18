@@ -781,6 +781,7 @@ private fun MoreMenu(
  * カタログアイテムのリスト形式表示。
  * 左側にサムネイル、右側にスレタイ・返信数を配置する、としあきアプリ風のレイアウト。
  * 画像とテキストは重ならないよう分離して配置する。
+ * アイテムの下部には太めの区切り線を配置する。
  */
 @Composable
 private fun CatalogListItem(
@@ -789,17 +790,18 @@ private fun CatalogListItem(
     onImageLoadHttp404: (item: ImageItem, failedUrl: String) -> Unit,
     onImageLoadSuccess: (item: ImageItem, loadedUrl: String) -> Unit,
 ) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = com.valoser.toshikari.ui.theme.LocalSpacing.current.xs),
-        onClick = onClick,
-        colors = androidx.compose.material3.CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        ),
-        // Ripple effectを明確にするための設定
-        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
-    ) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = com.valoser.toshikari.ui.theme.LocalSpacing.current.xs),
+            onClick = onClick,
+            colors = androidx.compose.material3.CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            ),
+            // Ripple effectを明確にするための設定
+            interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+        ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -913,6 +915,12 @@ private fun CatalogListItem(
                 }
             }
         }
+        }
+        HorizontalDivider(
+            modifier = Modifier.padding(horizontal = com.valoser.toshikari.ui.theme.LocalSpacing.current.s),
+            thickness = 2.dp,
+            color = MaterialTheme.colorScheme.outlineVariant
+        )
     }
 }
 
@@ -933,7 +941,7 @@ private fun CatalogCard(
 ) {
     Card(
         modifier = Modifier
-            .padding(com.valoser.toshikari.ui.theme.LocalSpacing.current.xs)
+            .padding(com.valoser.toshikari.ui.theme.LocalSpacing.current.xxs)
             .aspectRatio(3f / 4f), // カード全体を4:3に
         onClick = onClick,
         border = androidx.compose.foundation.BorderStroke(
