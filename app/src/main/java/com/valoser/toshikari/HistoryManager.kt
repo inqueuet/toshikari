@@ -48,12 +48,18 @@ object HistoryManager {
             withContext(Dispatchers.IO) {
                 prefs(context).edit().putString(KEY_HISTORY, Gson().toJson(list)).apply()
             }
-            // 変更通知（自アプリ内限定ブロードキャスト）
-            val intent = Intent(ACTION_HISTORY_CHANGED).apply {
-                setPackage(context.packageName)
-                addFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY)
+            // 変更通知（自アプリ内限定ブロードキャスト）- メインスレッドで実行
+            withContext(Dispatchers.Main) {
+                try {
+                    val intent = Intent(ACTION_HISTORY_CHANGED).apply {
+                        setPackage(context.packageName)
+                        addFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY)
+                    }
+                    context.sendBroadcast(intent)
+                } catch (e: Exception) {
+                    android.util.Log.w("HistoryManager", "Failed to send broadcast", e)
+                }
             }
-            context.sendBroadcast(intent)
         } catch (e: Exception) {
             // 保存失敗時のログ出力（サイレント失敗を防ぐ）
             android.util.Log.e("HistoryManager", "Failed to save history", e)
@@ -87,6 +93,9 @@ object HistoryManager {
                         thumbnailUrl = thumbnailUrl ?: e.thumbnailUrl,
                         threadUrl = e.threadUrl ?: url
                     )
+                    // マイグレーション時は既に更新済みなので保存して終了
+                    saveLocked(context, list)
+                    return@withLock
                 }
             }
             if (idx >= 0) {
@@ -121,9 +130,15 @@ object HistoryManager {
      * - 未読あり同士: `lastUpdatedAt` の降順で並べ、同値は `lastViewedAt` で安定化
      * - 未読なし同士: `lastViewedAt` の降順
      * - いずれの場合も最終的に `lastViewedAt` を比較して既知の閲覧順を維持
+     *
+     * Note: この関数は同期的に呼び出し可能。内部で runBlocking + historyMutex で
+     *       他の書き込み操作との競合を防いでいる。
      */
     fun getAll(context: Context): List<HistoryEntry> {
-        val list = load(context)
+        // 書き込み操作との競合を防ぐため historyMutex で保護（ロック機構を統一）
+        val list = kotlinx.coroutines.runBlocking {
+            historyMutex.withLock { load(context) }
+        }
         // 未読ありを優先 → 未読あり同士は lastUpdatedAt 降順 → 未読なしは lastViewedAt 降順
         return list.sortedWith(compareByDescending<HistoryEntry> { it.unreadCount > 0 }
             .thenByDescending { if (it.unreadCount > 0) it.lastUpdatedAt else it.lastViewedAt }

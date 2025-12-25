@@ -18,6 +18,9 @@ import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.Collections
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 private const val IMAGES_SUBDIR = "images"
 private const val THUMBNAILS_SUBDIR = "thumbnails"
@@ -32,7 +35,8 @@ data class ThreadArchiveProgress(
     val currentFileName: String? = null,
     val isActive: Boolean = true
 ) {
-    val percentage: Int get() = if (total > 0) (current * 100 / total) else 0
+    // 100%を超えないように制限し、totalが0の場合は0を返す
+    val percentage: Int get() = if (total > 0) (current * 100 / total).coerceIn(0, 100) else 0
 }
 
 /**
@@ -133,15 +137,16 @@ class ThreadArchiver(
             Log.i(TAG, "Total media items collected: ${uniqueMediaItems.size}")
 
             val totalItems = uniqueMediaItems.size + 1 // +1 はHTMLファイル
-            var currentProgress = 0
+            val currentProgress = AtomicInteger(0)
 
             // ディレクトリを作成
             val archiveDir = createArchiveDirectory(dirName)
                 ?: return@withContext Result.failure(Exception("アーカイブディレクトリの作成に失敗しました"))
 
             // メディアファイルをダウンロード（4並列）
-            val downloadedFiles = mutableMapOf<String, String>() // URL -> ローカル相対パス
-            val failedUrls = mutableListOf<String>()
+            // スレッドセーフなコレクションを使用
+            val downloadedFiles = ConcurrentHashMap<String, String>() // URL -> ローカル相対パス
+            val failedUrls = Collections.synchronizedList(mutableListOf<String>())
             val semaphore = Semaphore(4)
 
             coroutineScope {
@@ -153,7 +158,7 @@ class ThreadArchiver(
                                 val relativePath = buildRelativePath(mediaItem.subDirectory, fileName)
                                 onProgress(
                                     ThreadArchiveProgress(
-                                        current = currentProgress,
+                                        current = currentProgress.get(),
                                         total = totalItems,
                                         currentFileName = relativePath
                                     )
@@ -172,23 +177,15 @@ class ThreadArchiver(
                                 )
 
                                 if (success) {
-                                    synchronized(downloadedFiles) {
-                                        downloadedFiles[mediaItem.url] = relativePath
-                                    }
-                                    synchronized(this@ThreadArchiver) {
-                                        currentProgress++
-                                    }
+                                    downloadedFiles[mediaItem.url] = relativePath
+                                    currentProgress.incrementAndGet()
                                     Log.d(TAG, "Downloaded: $relativePath")
                                 } else {
-                                    synchronized(failedUrls) {
-                                        failedUrls.add(mediaItem.url)
-                                    }
+                                    failedUrls.add(mediaItem.url)
                                     Log.w(TAG, "Failed to download: ${mediaItem.url}")
                                 }
                             } catch (e: Exception) {
-                                synchronized(failedUrls) {
-                                    failedUrls.add(mediaItem.url)
-                                }
+                                failedUrls.add(mediaItem.url)
                                 Log.e(TAG, "Error downloading ${mediaItem.url}", e)
                             }
                         }
@@ -199,7 +196,7 @@ class ThreadArchiver(
             // HTMLファイルを生成
             onProgress(
                 ThreadArchiveProgress(
-                    current = currentProgress,
+                    current = currentProgress.get(),
                     total = totalItems,
                     currentFileName = "index.html"
                 )
@@ -210,7 +207,7 @@ class ThreadArchiver(
             val htmlSuccess = saveHtmlFile(htmlContent, htmlFileName, archiveDir)
 
             if (htmlSuccess) {
-                currentProgress++
+                currentProgress.incrementAndGet()
                 Log.d(TAG, "HTML file created: $htmlFileName")
             } else {
                 Log.w(TAG, "Failed to create HTML file")
@@ -218,7 +215,7 @@ class ThreadArchiver(
 
             onProgress(
                 ThreadArchiveProgress(
-                    current = currentProgress,
+                    current = currentProgress.get(),
                     total = totalItems,
                     currentFileName = null,
                     isActive = false
@@ -686,31 +683,45 @@ class ThreadArchiver(
     private fun formatParagraphsAndQuotes(rawHtml: String): String {
         if (rawHtml.isBlank()) return rawHtml
 
-        // ブロック要素として扱うタグ
-        val blockPattern = Regex(
-            pattern = "(?is)" +
-                    "(" +
-                    // 開閉タグを持つブロック
-                    "<(?:blockquote|details|figure|div|ul|ol|li|dl|dt|dd|pre|table|thead|tbody|tr|td|th|h[1-6]|p)\\b[^>]*>.*?</\\s*(?:blockquote|details|figure|div|ul|ol|li|dl|dt|dd|pre|table|thead|tbody|tr|td|th|h[1-6]|p)\\s*>" +
-                    "|" +
-                    // 単独タグ（hr等）
-                    "<(?:hr)\\b[^>]*/?>" +
-                    ")"
+        // ブロック要素として扱うタグ（ネスト対応版）
+        // 正規表現ではネストを完全に処理できないため、Jsoupを使用してブロック要素を検出
+        val blockTags = setOf(
+            "blockquote", "details", "figure", "div", "ul", "ol", "li",
+            "dl", "dt", "dd", "pre", "table", "thead", "tbody", "tr", "td", "th",
+            "h1", "h2", "h3", "h4", "h5", "h6", "p", "hr"
         )
 
-        // テキストとブロック要素に分割
+        // テキストとブロック要素に分割（Jsoupで安全にパース）
         val parts = mutableListOf<Pair<Boolean, String>>() // (isBlock, content)
-        var idx = 0
-        blockPattern.findAll(rawHtml).forEach { m ->
-            if (m.range.first > idx) {
-                parts += false to rawHtml.substring(idx, m.range.first) // テキスト
+        try {
+            val doc = org.jsoup.Jsoup.parseBodyFragment(rawHtml)
+            val body = doc.body()
+
+            body.childNodes().forEach { node ->
+                when (node) {
+                    is org.jsoup.nodes.Element -> {
+                        val isBlock = node.tagName().lowercase() in blockTags
+                        parts += isBlock to node.outerHtml()
+                    }
+                    is org.jsoup.nodes.TextNode -> {
+                        val text = node.wholeText
+                        if (text.isNotBlank()) {
+                            parts += false to text
+                        }
+                    }
+                    else -> {
+                        parts += false to node.outerHtml()
+                    }
+                }
             }
-            parts += true to m.value // ブロック
-            idx = m.range.last + 1
+        } catch (e: Exception) {
+            // パース失敗時は元のHTMLをそのまま返す
+            Log.w(TAG, "Failed to parse HTML for formatting", e)
+            return rawHtml
         }
-        if (idx < rawHtml.length) {
-            parts += false to rawHtml.substring(idx)
-        }
+
+        // パーツが空の場合は元のHTMLを返す
+        if (parts.isEmpty()) return rawHtml
 
         fun isLongQuote(html: String): Boolean {
             val text = html.replace(Regex("(?is)<.*?>"), "")

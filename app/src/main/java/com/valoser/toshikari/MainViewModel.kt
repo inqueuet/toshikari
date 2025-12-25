@@ -107,7 +107,9 @@ class MainViewModel @Inject constructor(
     }
 
     // URL推測結果をキャッシュ（サイズを拡大）
-    private val urlGuessCache = LruCache<String, String?>(500)
+    // nullと未キャッシュを区別するためOptionalラッパーを使用
+    private data class CachedUrl(val url: String?)
+    private val urlGuessCache = LruCache<String, CachedUrl>(500)
     private val failedUrlCache = LruCache<String, Boolean>(200)
     private val threadWatchStore by lazy { ThreadWatchStore(appContext) }
 
@@ -133,13 +135,17 @@ class MainViewModel @Inject constructor(
     // 差分更新向け: detailUrl をキーにした順序付きマップで保持
     // 動的サイズ制限付きLinkedHashMapでメモリ使用量を制御
     private val maxImageCacheSize = calculateMaxImageCacheSize()
-    private val _imageMap = MutableStateFlow<LinkedHashMap<String, ImageItem>>(
-        object : LinkedHashMap<String, ImageItem>(maxImageCacheSize, 0.75f, true) {
+
+    // LRU制限付きLinkedHashMapを生成するファクトリ関数
+    private fun createLruImageMap(initialCapacity: Int = 16): LinkedHashMap<String, ImageItem> {
+        return object : LinkedHashMap<String, ImageItem>(initialCapacity, 0.75f, true) {
             override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ImageItem>?): Boolean {
                 return size > maxImageCacheSize
             }
         }
-    )
+    }
+
+    private val _imageMap = MutableStateFlow<LinkedHashMap<String, ImageItem>>(createLruImageMap())
     private val _imageList = MutableStateFlow<List<ImageItem>>(emptyList())
     @Deprecated("UI 側では imageList を利用する")
     val imageMap: StateFlow<Map<String, ImageItem>> = _imageMap.asStateFlow()
@@ -148,9 +154,15 @@ class MainViewModel @Inject constructor(
         newMap: LinkedHashMap<String, ImageItem>,
         newList: List<ImageItem>? = null,
     ) {
-        _imageMap.value = newMap
-        _imageList.value = newList ?: newMap.values.toList()
+        // LRU制限を維持するために新しいLruMapにコピー
+        val lruMap = createLruImageMap(newMap.size)
+        lruMap.putAll(newMap)
+        _imageMap.value = lruMap
+        _imageList.value = newList ?: lruMap.values.toList()
     }
+
+    // fetchJob と fetchJobUrl をアトミックに更新するためのロックオブジェクト
+    private val fetchJobLock = Any()
 
     @Volatile
     private var fetchJob: Job? = null
@@ -313,12 +325,15 @@ class MainViewModel @Inject constructor(
     // detailUrl 単位だとプレビュー404対応中にフル画像404の修正が潰れることがあるため、
     // 失敗URL単位（detailUrl|failedUrl）で抑制する。
     // メモリリーク防止のため、最大サイズ制限付きのSetを使用
-    private val fixing404 = Collections.newSetFromMap(
-        object : LinkedHashMap<String, Boolean>(32, 0.75f, true) {
-            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>?): Boolean {
-                return size > 100 // 最大100件まで保持
+    // accessOrder=true の LinkedHashMap は読み取り時も内部構造を変更するため synchronizedSet でラップが必要
+    private val fixing404 = Collections.synchronizedSet(
+        Collections.newSetFromMap(
+            object : LinkedHashMap<String, Boolean>(32, 0.75f, true) {
+                override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>?): Boolean {
+                    return size > 100 // 最大100件まで保持
+                }
             }
-        }
+        )
     )
     // 404回数制限（detailUrl + failedUrl 単位でカウント）
     // メモリリーク防止のため、最大サイズ制限付きのMapを使用
@@ -355,8 +370,11 @@ class MainViewModel @Inject constructor(
 
     private fun clear404ForDetail(detailUrl: String) {
         val prefix = "$detailUrl|"
-        val keysToRemove = http404Counts.keys.filter { it.startsWith(prefix) }
-        keysToRemove.forEach { http404Counts.remove(it) }
+        // synchronizedMapのイテレーションは外部同期が必要
+        synchronized(http404Counts) {
+            val keysToRemove = http404Counts.keys.filter { it.startsWith(prefix) }
+            keysToRemove.forEach { http404Counts.remove(it) }
+        }
     }
 
     /**
@@ -366,18 +384,22 @@ class MainViewModel @Inject constructor(
      * 失敗時は `null` を返す。
      */
     private fun guessFullFromPreview(previewUrl: String): String? {
-        return urlGuessCache.get(previewUrl) ?: run {
-            // 既に失敗記録があるなら即座にnullを返す
-            if (failedUrlCache.get(previewUrl) == true) return null
-
-            val result = guessFullFromPreviewInternal(previewUrl)
-            if (result != null) {
-                urlGuessCache.put(previewUrl, result)
-            } else {
-                failedUrlCache.put(previewUrl, true)
-            }
-            result
+        // キャッシュから取得（CachedUrlでラップされているのでnullと未キャッシュを区別可能）
+        val cached = urlGuessCache.get(previewUrl)
+        if (cached != null) {
+            return cached.url
         }
+
+        // 既に失敗記録があるなら即座にnullを返す
+        if (failedUrlCache.get(previewUrl) == true) return null
+
+        val result = guessFullFromPreviewInternal(previewUrl)
+        // 結果をキャッシュ（nullでもCachedUrlとして保存）
+        urlGuessCache.put(previewUrl, CachedUrl(result))
+        if (result == null) {
+            failedUrlCache.put(previewUrl, true)
+        }
+        return result
     }
 
     private fun guessFullFromPreviewInternal(previewUrl: String): String? {
@@ -614,8 +636,8 @@ class MainViewModel @Inject constructor(
                 return true
             }
             Log.w("UrlExists", "Attempt #${attempt}: Both HEAD and GET Range failed for $url.")
-            // 次の試行まで短い遅延を挟む（スパイク回避）。
-            if (attempt < attempts) {
+            // 次の試行まで短い遅延を挟む（スパイク回避）。最終試行後は遅延不要。
+            if (attempt < attempts - 1) {
                 val backoff = 50L + kotlin.random.Random.nextLong(0, 50)
                 delay(backoff)
             }
@@ -631,13 +653,16 @@ class MainViewModel @Inject constructor(
      * - ここでは追加のHEAD検証は行わず、後段のプリフェッチ/404補正フローに委ねる
      */
     fun fetchImagesFromUrl(url: String) {
-        val ongoingJob = fetchJob
-        if (ongoingJob != null && fetchJobUrl != url) {
-            ongoingJob.cancel()
+        // ジョブとURLをアトミックに更新
+        val jobToCancel: Job?
+        synchronized(fetchJobLock) {
+            jobToCancel = if (fetchJob != null && fetchJobUrl != url) fetchJob else null
         }
+        jobToCancel?.cancel()
 
         val job = viewModelScope.launch(ImageLoadingDispatcher) {
-            val currentJob = coroutineContext[Job]
+            // このジョブのURLを保存（後で比較に使用）
+            val myUrl = url
             withContext(Dispatchers.Main) { _isLoading.value = true }
             try {
                 val document = networkClient.fetchDocument(url)
@@ -680,7 +705,8 @@ class MainViewModel @Inject constructor(
                     }
                 }
 
-                val shouldApplyResult = currentJob != null && (fetchJob === currentJob || fetchJobUrl == url)
+                // 結果を適用すべきか確認（URLベースで比較）
+                val shouldApplyResult = synchronized(fetchJobLock) { fetchJobUrl == myUrl }
                 if (shouldApplyResult) {
                     val newMap = LinkedHashMap<String, ImageItem>(merged.size)
                     merged.forEach { item -> newMap[item.detailUrl] = item }
@@ -698,7 +724,8 @@ class MainViewModel @Inject constructor(
                 Log.d("VM_FETCH", "Fetch cancelled for url: $url")
                 throw ce
             } catch (e: Exception) {
-                if (fetchJob === currentJob) {
+                val isCurrentJob = synchronized(fetchJobLock) { fetchJobUrl == myUrl }
+                if (isCurrentJob) {
                     withContext(Dispatchers.Main) {
                         _error.value = "データの取得に失敗しました: ${e.message}"
                     }
@@ -706,19 +733,23 @@ class MainViewModel @Inject constructor(
                     Log.w("VM_FETCH", "Ignoring error from stale fetch for $url: ${e.message}")
                 }
             } finally {
-                if (fetchJob === currentJob) {
-                    withContext(Dispatchers.Main) { _isLoading.value = false }
-                    fetchJob = null
-                    fetchJobUrl = null
+                synchronized(fetchJobLock) {
+                    if (fetchJobUrl == myUrl) {
+                        fetchJob = null
+                        fetchJobUrl = null
+                    }
                 }
+                withContext(Dispatchers.Main) { _isLoading.value = false }
             }
 
             // 以降はバックグラウンドで必要最小限の改善のみ（404等の個別対応を優先するため全件HEADは行わない）
             // 必要であればプレビューURLのみ軽量検証を段階的に適用可能だが、既定ではスキップ
         }
 
-        fetchJob = job
-        fetchJobUrl = url
+        synchronized(fetchJobLock) {
+            fetchJob = job
+            fetchJobUrl = url
+        }
     }
 
     /** 監視キーワードとタイトルが一致したスレッドを履歴へ登録し、監視をスケジュールする。 */
@@ -818,7 +849,7 @@ class MainViewModel @Inject constructor(
             }
 
             // サムネイルURLが最終的に得られない場合はスキップ
-            if (imageUrl.isNullOrEmpty()) continue
+            val validImageUrl = imageUrl?.takeIf { it.isNotEmpty() } ?: continue
 
             // タイトル・レス数（無ければ空でOK）
             val title = firstLineFromSmall(cell.selectFirst("small"))
@@ -826,7 +857,7 @@ class MainViewModel @Inject constructor(
 
             parsedItems.add(
                 ImageItem(
-                    previewUrl = imageUrl!!,
+                    previewUrl = validImageUrl,
                     title = title,
                     replyCount = replies,
                     detailUrl = detailUrl,
@@ -967,17 +998,4 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    /**
-     * 内部用: フル画像URLの更新を差分反映する。
-     */
-    private fun updateFullImageUrl(detailUrl: String, url: String) {
-        val item = _imageMap.value[detailUrl] ?: return
-        val updated = item.copy(
-            fullImageUrl = url,
-            urlFixNote = "URL修正: 推測候補の検証で確定"
-        )
-        val newMap = LinkedHashMap(_imageMap.value)
-        newMap[detailUrl] = updated
-        updateImageState(newMap)
-    }
 }

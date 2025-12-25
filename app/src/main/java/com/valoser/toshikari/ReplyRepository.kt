@@ -130,7 +130,9 @@ class ReplyRepository @Inject constructor(
                 bodyBuilder.addFormDataPart("sub", null, it.toShiftJISRequestBody())
             }
             bodyBuilder.addFormDataPart("com", null, com.toShiftJISRequestBody())
-            finalPwd?.let { bodyBuilder.addFormDataPart("pwd", null, it.toShiftJISRequestBody()) }
+            finalPwd?.takeIf { it.isNotEmpty() }?.let {
+                bodyBuilder.addFormDataPart("pwd", null, it.toShiftJISRequestBody())
+            }
 
             // 既定 hidden
             bodyBuilder.addFormDataPart("pthc", null, pthc.toShiftJISRequestBody())
@@ -176,7 +178,8 @@ class ReplyRepository @Inject constructor(
             // Cookie 結合（WebView + OkHttpJar）
             // -----------------------------
             // CookieManager は Looper が必要なのでメインスレッドで実行（タイムアウト付き）
-            val webViewCookie = withTimeoutOrNull(1000L) {
+            // 低スペック端末やバックグラウンド時を考慮して3秒に延長
+            val webViewCookie = withTimeoutOrNull(3000L) {
                 withContext(kotlinx.coroutines.Dispatchers.Main) {
                     try {
                         val cm = android.webkit.CookieManager.getInstance()
@@ -357,21 +360,6 @@ class ReplyRepository @Inject constructor(
         if (hasSuccessPattern) return false
 
         return errorPatterns.any { it.containsMatchIn(plainText) }
-    }
-
-    /**
-     * HTML からエラーメッセージらしき文言を抽出して返します（最大 200 文字程度）。
-     * フォールバックは汎用の失敗メッセージです。
-     */
-    private fun parseErrorMessage(html: String): String {
-        return runCatching {
-            val doc = Jsoup.parse(html)
-            // よくある場所からエラー文言を拾う（板ごとに調整可能）
-            val cand = doc.select("div,span,font,body").firstOrNull { it.text().contains("エラー") }
-            (cand?.text()?.ifBlank { null })
-                ?: doc.body()?.text()?.take(200)
-                ?: "投稿に失敗しました"
-        }.getOrDefault("投稿に失敗しました")
     }
 
     /**

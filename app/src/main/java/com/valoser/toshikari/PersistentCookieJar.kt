@@ -11,6 +11,7 @@ import okhttp3.Cookie
 import okhttp3.CookieJar
 import okhttp3.HttpUrl
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * OkHttp 用の永続化対応 CookieJar。
@@ -29,7 +30,8 @@ object PersistentCookieJar : CookieJar {
     private lateinit var sharedPreferences: SharedPreferences
     private val gson = Gson()
 
-    private val cookieStore = ConcurrentHashMap<String, MutableList<SerializableCookie>>()
+    // CopyOnWriteArrayListを使用してスレッドセーフなリストを保持
+    private val cookieStore = ConcurrentHashMap<String, CopyOnWriteArrayList<SerializableCookie>>()
 
     @Volatile
     private var isInitialized = false
@@ -78,8 +80,11 @@ object PersistentCookieJar : CookieJar {
             val baseDomain = if (hostOnly) requestHost else cookie.domain
             val effectiveDomain = normalizeDomain(baseDomain.ifEmpty { requestHost })
 
-            val storedCookiesForDomain = cookieStore.getOrPut(effectiveDomain) { mutableListOf() }
-            storedCookiesForDomain.removeAll { it.name == cookie.name && it.path == cookie.path }
+            val storedCookiesForDomain = cookieStore.getOrPut(effectiveDomain) { CopyOnWriteArrayList() }
+            // domain も考慮して同一 Cookie を削除（異なるサブドメインの Cookie を誤削除しない）
+            storedCookiesForDomain.removeIf {
+                it.name == cookie.name && it.path == cookie.path && it.domain == cookie.domain
+            }
 
             if (cookie.persistent) {
                 if (cookie.expiresAt > now) {
@@ -94,17 +99,32 @@ object PersistentCookieJar : CookieJar {
         }
         saveCookiesToPrefs()
 
-        // WebView への Cookie 同期（UI スレッドで実行、エラー発生時は無視）
+        // WebView への Cookie 同期（UI スレッドで実行、リトライ機構付き）
+        syncCookiesToWebView(url.toString(), cookies)
+    }
+
+    /**
+     * WebView の CookieManager に Cookie を同期する（リトライ機構付き）
+     */
+    private fun syncCookiesToWebView(url: String, cookies: List<Cookie>, retryCount: Int = 0) {
+        val maxRetries = 2
         try {
             val cookieStrings = cookies.map { it.toString() }
             Handler(Looper.getMainLooper()).post {
                 try {
                     val cm = android.webkit.CookieManager.getInstance()
-                    cookieStrings.forEach { cs -> cm.setCookie(url.toString(), cs) }
+                    cookieStrings.forEach { cs -> cm.setCookie(url, cs) }
                     cm.flush()
                 } catch (e: Exception) {
-                    // WebView が初期化されていない、またはバックグラウンド状態での例外を無視
-                    Log.w("PersistentCookieJar", "Error synchronizing cookies to WebView: ${e.message}")
+                    // WebView が初期化されていない場合はリトライ
+                    if (retryCount < maxRetries) {
+                        Log.w("PersistentCookieJar", "WebView sync failed, retrying (${retryCount + 1}/$maxRetries): ${e.message}")
+                        Handler(Looper.getMainLooper()).postDelayed({
+                            syncCookiesToWebView(url, cookies, retryCount + 1)
+                        }, 500L * (retryCount + 1))
+                    } else {
+                        Log.w("PersistentCookieJar", "WebView sync failed after $maxRetries retries: ${e.message}")
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -183,15 +203,15 @@ object PersistentCookieJar : CookieJar {
                 domainsToRemove.add(domain)
             }
         }
-        domainsToRemove.forEach { domain ->
-            cookieStore.remove(domain)
-            sharedPreferences.edit().remove(COOKIES_KEY_PREFIX + domain).apply()
-            Log.d("PersistentCookieJar", "Cleared cookies for domain pattern: $domain (related to host $host)")
-        }
-        // SharedPreferences 側は個別に remove 済みのため追加保存処理は不要
         if (domainsToRemove.isNotEmpty()) {
-            // saveCookiesToPrefs() // cookieStore is already modified, this might save an empty list for removed domains.
-            // The removal from sharedPreferences is direct.
+            // バッチ処理で SharedPreferences を更新（競合状態を回避）
+            val editor = sharedPreferences.edit()
+            domainsToRemove.forEach { domain ->
+                cookieStore.remove(domain)
+                editor.remove(COOKIES_KEY_PREFIX + domain)
+                Log.d("PersistentCookieJar", "Cleared cookies for domain pattern: $domain (related to host $host)")
+            }
+            editor.apply()
         }
     }
 
@@ -225,6 +245,8 @@ object PersistentCookieJar : CookieJar {
      */
     private fun loadCookiesFromPrefs() {
         cookieStore.clear()
+        val keysToRemove = mutableListOf<String>()
+
         sharedPreferences.all.forEach { (key, value) ->
             if (key.startsWith(COOKIES_KEY_PREFIX) && value is String) {
                 try {
@@ -234,19 +256,26 @@ object PersistentCookieJar : CookieJar {
                     if (cookiesList != null) {
                         val now = System.currentTimeMillis()
                         // prefs should contain only persistent cookies; filter any expired ones just in case
-                        val validCookies = cookiesList.filter { it.persistent && it.expiresAt > now }.toMutableList()
+                        val validCookies = cookiesList.filter { it.persistent && it.expiresAt > now }
                         if (validCookies.isNotEmpty()) {
-                            cookieStore[domain] = validCookies
-                        } else if (cookiesList.isNotEmpty()){
-                            // all expired; remove key
-                            sharedPreferences.edit().remove(key).apply()
+                            cookieStore[domain] = CopyOnWriteArrayList(validCookies)
+                        } else if (cookiesList.isNotEmpty()) {
+                            // all expired; mark for removal
+                            keysToRemove.add(key)
                         }
                     }
                 } catch (e: Exception) {
                     Log.e("PersistentCookieJar", "Error deserializing cookies for key $key from SharedPreferences", e)
-                    sharedPreferences.edit().remove(key).apply()
+                    keysToRemove.add(key)
                 }
             }
+        }
+
+        // バッチ処理で期限切れ/不正なキーを削除（競合状態を回避）
+        if (keysToRemove.isNotEmpty()) {
+            val editor = sharedPreferences.edit()
+            keysToRemove.forEach { key -> editor.remove(key) }
+            editor.apply()
         }
     }
 
