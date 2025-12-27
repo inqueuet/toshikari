@@ -488,6 +488,7 @@ object MetadataExtractor {
                     String(textBytes, StandardCharsets.US_ASCII).trim().takeIf { it.isNotBlank() }
                 }
                 // JIS エンコーディングマーカー（あまり使われないが一応対応）
+                // sliceArray(0..4)は5要素にアクセスするため、size >= 5が必要。さらに8バイト目以降を使うため >= 8
                 bytes.size >= 8 &&
                 bytes.sliceArray(0..4).contentEquals("JIS\u0000\u0000".toByteArray(StandardCharsets.ISO_8859_1)) -> {
                     // 8バイト目以降をShift_JISとしてデコード（正確にはJISだが、実用上Shift_JISで処理）

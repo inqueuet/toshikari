@@ -137,9 +137,9 @@ class MainActivity : BaseActivity() {
 
     // Compose移行により、スクロール判定はComposable側に実装
 
-    // catset適用フラグを「板（例: https://zip.2chan.net/1/）」単位で保持
-    private val catsetAppliedBoards = mutableSetOf<String>()
-    private val catsetAppliedTimestamps = mutableMapOf<String, Long>() // boardKey -> appliedAt
+    // catset適用フラグを「板（例: https://zip.2chan.net/1/）」単位で保持（スレッドセーフ）
+    private val catsetAppliedBoards = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val catsetAppliedTimestamps = java.util.concurrent.ConcurrentHashMap<String, Long>() // boardKey -> appliedAt
     private val catsetPrefsName = "com.valoser.toshikari.catalog"
     private val catsetPrefsKey = "applied_boards"
     private val catsetPrefsTsKey = "applied_boards_ts"
@@ -715,12 +715,16 @@ class MainActivity : BaseActivity() {
     /**
      * 次の描画フレームのコールバックを1回待機する。
      * 画面遷移直後のカクつきを避けるため、重い処理の前に1フレーム挟む用途に使用。
+     * Choreographer.getInstance()はメインスレッドでのみ呼び出し可能なため、
+     * メインスレッドコンテキストで実行することを保証する。
      */
-    private suspend fun awaitNextFrame() = suspendCancellableCoroutine { cont ->
-        val choreographer = Choreographer.getInstance()
-        val callback = Choreographer.FrameCallback { if (!cont.isCompleted) cont.resume(Unit) }
-        choreographer.postFrameCallback(callback)
-        cont.invokeOnCancellation { choreographer.removeFrameCallback(callback) }
+    private suspend fun awaitNextFrame() = withContext(Dispatchers.Main) {
+        suspendCancellableCoroutine { cont ->
+            val choreographer = Choreographer.getInstance()
+            val callback = Choreographer.FrameCallback { if (!cont.isCompleted) cont.resume(Unit) }
+            choreographer.postFrameCallback(callback)
+            cont.invokeOnCancellation { choreographer.removeFrameCallback(callback) }
+        }
     }
 
     /**

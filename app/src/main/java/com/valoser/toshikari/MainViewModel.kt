@@ -148,35 +148,43 @@ class MainViewModel @Inject constructor(
     private val _imageMap = MutableStateFlow<LinkedHashMap<String, ImageItem>>(createLruImageMap())
     private val _imageList = MutableStateFlow<List<ImageItem>>(emptyList())
     // カタログの並び順（detailUrl）を保持し、LRUアクセス順の影響を受けないようにする
+    @Volatile
     private var imageOrder: List<String> = emptyList()
+
+    // imageMapとimageListの更新を同期化するためのロック
+    private val imageStateLock = Any()
+
     @Deprecated("UI 側では imageList を利用する")
     val imageMap: StateFlow<Map<String, ImageItem>> = _imageMap.asStateFlow()
 
+    @Synchronized
     private fun updateImageState(
         newMap: LinkedHashMap<String, ImageItem>,
         newList: List<ImageItem>? = null,
     ) {
-        // LRU制限を維持するために新しいLruMapにコピー
-        val lruMap = createLruImageMap(newMap.size)
-        lruMap.putAll(newMap)
-        _imageMap.value = lruMap
-        if (newList != null) {
-            imageOrder = newList.map { it.detailUrl }
-            _imageList.value = newList
-        } else {
-            val ordered = ArrayList<ImageItem>(lruMap.size)
-            val seen = HashSet<String>(lruMap.size)
-            for (key in imageOrder) {
-                val updated = lruMap[key] ?: continue
-                ordered.add(updated)
-                seen.add(key)
-            }
-            if (seen.size != lruMap.size) {
-                for ((key, item) in lruMap) {
-                    if (!seen.contains(key)) ordered.add(item)
+        synchronized(imageStateLock) {
+            // LRU制限を維持するために新しいLruMapにコピー
+            val lruMap = createLruImageMap(newMap.size)
+            lruMap.putAll(newMap)
+            _imageMap.value = lruMap
+            if (newList != null) {
+                imageOrder = newList.map { it.detailUrl }
+                _imageList.value = newList
+            } else {
+                val ordered = ArrayList<ImageItem>(lruMap.size)
+                val seen = HashSet<String>(lruMap.size)
+                for (key in imageOrder) {
+                    val updated = lruMap[key] ?: continue
+                    ordered.add(updated)
+                    seen.add(key)
                 }
+                if (seen.size != lruMap.size) {
+                    for ((key, item) in lruMap) {
+                        if (!seen.contains(key)) ordered.add(item)
+                    }
+                }
+                _imageList.value = ordered
             }
-            _imageList.value = ordered
         }
     }
 
@@ -672,10 +680,15 @@ class MainViewModel @Inject constructor(
      * - ここでは追加のHEAD検証は行わず、後段のプリフェッチ/404補正フローに委ねる
      */
     fun fetchImagesFromUrl(url: String) {
-        // ジョブとURLをアトミックに更新
+        // ジョブとURLをアトミックに更新（同期ブロック内で完全に処理）
         val jobToCancel: Job?
         synchronized(fetchJobLock) {
             jobToCancel = if (fetchJob != null && fetchJobUrl != url) fetchJob else null
+            // 新しいジョブをセットする前に古いジョブ情報をクリア
+            if (jobToCancel != null) {
+                fetchJob = null
+                fetchJobUrl = null
+            }
         }
         jobToCancel?.cancel()
 

@@ -83,11 +83,23 @@ class EditingEngine(
         canvas.restore()
     }
 
+    /**
+     * リソースを解放する。呼び出し側は使用後に必ず呼び出すこと。
+     * composeFinal()で作成されたBitmapは呼び出し側が別途recycle()する必要がある。
+     */
+    fun release() {
+        mosaicFull.recycle()
+        maskBitmap.recycle()
+    }
+
     // --- 簡易モザイク生成（縮小→拡大、フィルタ無し） ---
     private fun makePixelated(src: Bitmap, block: Int): Bitmap {
         val w = (src.width / block).coerceAtLeast(1)
         val h = (src.height / block).coerceAtLeast(1)
         val small = Bitmap.createScaledBitmap(src, w, h, false)
-        return Bitmap.createScaledBitmap(small, src.width, src.height, false)
+        val result = Bitmap.createScaledBitmap(small, src.width, src.height, false)
+        // 中間Bitmapをリサイクル
+        small.recycle()
+        return result
     }
 }

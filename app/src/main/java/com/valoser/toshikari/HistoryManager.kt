@@ -131,15 +131,32 @@ object HistoryManager {
      * - 未読なし同士: `lastViewedAt` の降順
      * - いずれの場合も最終的に `lastViewedAt` を比較して既知の閲覧順を維持
      *
-     * Note: この関数は同期的に呼び出し可能。内部で runBlocking + historyMutex で
-     *       他の書き込み操作との競合を防いでいる。
+     * Note: この関数は同期的に呼び出し可能だが、大きなリストではパフォーマンスに影響する可能性がある。
+     *       可能であればコルーチンコンテキストから呼び出すことを推奨。
      */
     fun getAll(context: Context): List<HistoryEntry> {
         // 書き込み操作との競合を防ぐため historyMutex で保護（ロック機構を統一）
-        val list = kotlinx.coroutines.runBlocking {
-            historyMutex.withLock { load(context) }
+        // runBlockingはUIスレッドでの使用を避けるべきだが、後方互換性のため維持
+        val list = try {
+            kotlinx.coroutines.runBlocking {
+                historyMutex.withLock { load(context) }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("HistoryManager", "Failed to load history", e)
+            mutableListOf()
         }
         // 未読ありを優先 → 未読あり同士は lastUpdatedAt 降順 → 未読なしは lastViewedAt 降順
+        return list.sortedWith(compareByDescending<HistoryEntry> { it.unreadCount > 0 }
+            .thenByDescending { if (it.unreadCount > 0) it.lastUpdatedAt else it.lastViewedAt }
+            .thenByDescending { it.lastViewedAt })
+    }
+
+    /**
+     * すべての履歴を非同期で取得（推奨）。
+     * コルーチンコンテキストから呼び出す場合はこちらを使用。
+     */
+    suspend fun getAllAsync(context: Context): List<HistoryEntry> {
+        val list = historyMutex.withLock { load(context) }
         return list.sortedWith(compareByDescending<HistoryEntry> { it.unreadCount > 0 }
             .thenByDescending { if (it.unreadCount > 0) it.lastUpdatedAt else it.lastViewedAt }
             .thenByDescending { it.lastViewedAt })

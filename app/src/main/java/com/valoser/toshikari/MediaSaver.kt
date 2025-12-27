@@ -8,6 +8,7 @@ import android.os.Environment
 import android.provider.MediaStore
 import android.webkit.MimeTypeMap
 import android.widget.Toast
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import android.net.Uri
@@ -129,6 +130,9 @@ object MediaSaver {
 
     /**
      * ファイルが既に存在するかをチェックする。
+     *
+     * 注意: 同時保存時の競合は完全には防げない。アプリレベルでの排他制御が必要な場合は
+     * 呼び出し側で同期化すること。
      */
     private suspend fun isFileExists(
         context: Context,
@@ -154,10 +158,16 @@ object MediaSaver {
                 arrayOf(fileName, "%/Toshikari/%")
             }
 
-            resolver.query(mediaContentUri, projection, selection, selectionArgs, null)?.use { cursor ->
+            val exists = resolver.query(mediaContentUri, projection, selection, selectionArgs, null)?.use { cursor ->
                 cursor.count > 0
             } ?: false
+
+            if (exists) {
+                Log.d("MediaSaver", "File already exists: $fileName")
+            }
+            exists
         } catch (e: Exception) {
+            Log.e("MediaSaver", "Error checking file existence: $fileName", e)
             false
         }
     }
@@ -237,9 +247,12 @@ object MediaSaver {
                     if (!downloadSuccess) {
                         // 失敗時のクリーンアップ
                         try {
-                            resolver.delete(uri, null, null)
+                            val deleted = resolver.delete(uri, null, null)
+                            if (deleted == 0) {
+                                Log.w("MediaSaver", "Failed to delete incomplete file: $uri")
+                            }
                         } catch (e: Exception) {
-                            // 削除失敗は無視（既に削除されている可能性）
+                            Log.e("MediaSaver", "Exception during cleanup delete: $uri", e)
                         }
                     }
                 }
@@ -247,7 +260,10 @@ object MediaSaver {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     values.clear()
                     values.put(MediaStore.MediaColumns.IS_PENDING, 0)
-                    resolver.update(uri, values, null, null)
+                    val updated = resolver.update(uri, values, null, null)
+                    if (updated == 0) {
+                        Log.w("MediaSaver", "Failed to clear IS_PENDING flag for: $uri")
+                    }
                 }
 
                 showToast(context, "ファイルを保存しました: $fileName")
@@ -344,9 +360,12 @@ object MediaSaver {
             } finally {
                 if (!downloadSuccess) {
                     try {
-                        resolver.delete(uri, null, null)
+                        val deleted = resolver.delete(uri, null, null)
+                        if (deleted == 0) {
+                            Log.w("MediaSaver", "Failed to delete incomplete video file: $uri")
+                        }
                     } catch (e: Exception) {
-                        // 削除失敗は無視
+                        Log.e("MediaSaver", "Exception during cleanup delete (video): $uri", e)
                     }
                 }
             }
@@ -354,7 +373,10 @@ object MediaSaver {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 values.clear()
                 values.put(MediaStore.MediaColumns.IS_PENDING, 0)
-                resolver.update(uri, values, null, null)
+                val updated = resolver.update(uri, values, null, null)
+                if (updated == 0) {
+                    Log.w("MediaSaver", "Failed to clear IS_PENDING flag for video: $uri")
+                }
             }
 
             showToast(context, "ファイルを保存しました: $fileName")

@@ -41,9 +41,9 @@ class NetworkClient(
 
             val i = trimmed.indexOf('=')
             when {
-                // '='がない、または先頭にある場合は無効なCookieとして無視
+                // '='がない (i == -1)、または先頭にある (i == 0) 場合は無効なCookieとして無視
                 i <= 0 -> {
-                    Log.w("NetworkClient", "Invalid cookie format (missing or leading '='): $trimmed")
+                    Log.w("NetworkClient", "Invalid cookie format (i=$i): $trimmed")
                     null
                 }
                 else -> {
@@ -200,6 +200,11 @@ class NetworkClient(
                 throw IOException("HTTPエラー: ${resp.code} ${resp.message}")
             }
             val body = resp.body ?: throw IOException("レスポンスボディが空です")
+            // セキュリティ対策: 最大10MBまでに制限
+            val contentLength = body.contentLength()
+            if (contentLength > 10 * 1024 * 1024) {
+                throw IOException("レスポンスサイズが大きすぎます: ${contentLength / 1024 / 1024}MB")
+            }
             val bytes = body.bytes()
             val decoded = EncodingUtils.decode(bytes, resp.header("Content-Type"))
             Jsoup.parse(decoded, url)
@@ -360,7 +365,8 @@ class NetworkClient(
             val jarCookie = jarCookies.joinToString("; ") { "${it.name}=${it.value}" }.ifBlank { null }
 
             // CookieManager は Looper が必要なのでメインスレッドで実行（タイムアウト付き）
-            val (webCookieRef, webCookieOrg) = withTimeoutOrNull(1000L) {
+            // タイムアウトを3秒に延長し、ロバストネスを向上
+            val (webCookieRef, webCookieOrg) = withTimeoutOrNull(3000L) {
                 withContext(kotlinx.coroutines.Dispatchers.Main) {
                     try {
                         val cm = CookieManager.getInstance()
@@ -372,7 +378,10 @@ class NetworkClient(
                         null to null
                     }
                 }
-            } ?: (null to null)
+            } ?: run {
+                Log.w("NetworkClient", "WebView cookie fetch timed out")
+                null to null
+            }
             val mergedCookie = mergeCookies(jarCookie, webCookieOrg, webCookieRef)
 
             val req = Request.Builder()

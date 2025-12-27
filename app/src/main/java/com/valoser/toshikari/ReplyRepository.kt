@@ -4,6 +4,7 @@ import android.content.ContentResolver
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.util.Log
 import android.webkit.MimeTypeMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -155,8 +156,12 @@ class ReplyRepository @Inject constructor(
                 // ファイルサイズ検証（可能な場合）。上限は extra の MAX_FILE_SIZE を優先、既定は 8_192_000 bytes（約 8.2MB）。
                 val maxBytes = extra["MAX_FILE_SIZE"]?.toLongOrNull() ?: 8_192_000L
                 val contentLen = getContentLength(cr, upfileUri)
-                if (contentLen != null && contentLen > maxBytes) {
-                    throw IOException("添付ファイルが大きすぎます（${contentLen} > ${maxBytes} bytes）")
+                if (contentLen != null) {
+                    if (contentLen > maxBytes) {
+                        throw IOException("添付ファイルが大きすぎます（${contentLen} > ${maxBytes} bytes）")
+                    }
+                } else {
+                    Log.w("ReplyRepository", "Could not determine file size for upload. Size validation skipped. URI: $upfileUri")
                 }
 
                 val fileRequest = streamingRequestBody(cr, upfileUri, mime, contentLen)

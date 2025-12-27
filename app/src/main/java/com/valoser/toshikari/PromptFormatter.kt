@@ -180,11 +180,12 @@ object PromptFormatter {
         }
     }
 
-    private fun JSONArray.firstConnectionNodeId(): String? {
-        if (length() == 0) return null
+    private fun JSONArray.firstConnectionNodeId(depth: Int = 0): String? {
+        // 無限再帰を防ぐために深さ制限を設ける
+        if (depth > 10 || length() == 0) return null
         val first = opt(0)
         return when (first) {
-            is JSONArray -> first.firstConnectionNodeId()
+            is JSONArray -> first.firstConnectionNodeId(depth + 1)
             is JSONObject -> first.optString("id").takeUnless { it.isBlank() }
             is String -> first.takeUnless { it.isBlank() }
             is Number -> first.toString()

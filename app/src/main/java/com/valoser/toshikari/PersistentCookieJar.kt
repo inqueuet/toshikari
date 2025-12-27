@@ -10,6 +10,9 @@ import com.google.gson.reflect.TypeToken
 import okhttp3.Cookie
 import okhttp3.CookieJar
 import okhttp3.HttpUrl
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 
@@ -104,32 +107,35 @@ object PersistentCookieJar : CookieJar {
     }
 
     /**
-     * WebView の CookieManager に Cookie を同期する（リトライ機構付き）
+     * WebView の CookieManager に Cookie を同期する（コルーチンベースのリトライ機構付き）
      */
-    private fun syncCookiesToWebView(url: String, cookies: List<Cookie>, retryCount: Int = 0) {
-        val maxRetries = 2
-        try {
-            val cookieStrings = cookies.map { it.toString() }
-            Handler(Looper.getMainLooper()).post {
+    private fun syncCookiesToWebView(url: String, cookies: List<Cookie>) {
+        if (cookies.isEmpty()) return
+
+        // グローバルスコープで実行（UIライフサイクルに依存しない）
+        kotlinx.coroutines.GlobalScope.launch(kotlinx.coroutines.Dispatchers.Main) {
+            val maxRetries = 3
+            var retryCount = 0
+            var success = false
+
+            while (retryCount < maxRetries && !success) {
                 try {
                     val cm = android.webkit.CookieManager.getInstance()
-                    cookieStrings.forEach { cs -> cm.setCookie(url, cs) }
+                    cookies.forEach { cookie ->
+                        cm.setCookie(url, cookie.toString())
+                    }
                     cm.flush()
+                    success = true
                 } catch (e: Exception) {
-                    // WebView が初期化されていない場合はリトライ
+                    retryCount++
                     if (retryCount < maxRetries) {
-                        Log.w("PersistentCookieJar", "WebView sync failed, retrying (${retryCount + 1}/$maxRetries): ${e.message}")
-                        Handler(Looper.getMainLooper()).postDelayed({
-                            syncCookiesToWebView(url, cookies, retryCount + 1)
-                        }, 500L * (retryCount + 1))
+                        Log.w("PersistentCookieJar", "WebView sync failed, retrying ($retryCount/$maxRetries): ${e.message}")
+                        kotlinx.coroutines.delay(500L * retryCount)
                     } else {
-                        Log.w("PersistentCookieJar", "WebView sync failed after $maxRetries retries: ${e.message}")
+                        Log.e("PersistentCookieJar", "WebView sync failed after $maxRetries retries", e)
                     }
                 }
             }
-        } catch (e: Exception) {
-            // Handler の post 自体が失敗した場合（通常は発生しない）
-            Log.w("PersistentCookieJar", "Failed to post cookie sync task: ${e.message}")
         }
     }
 
@@ -149,16 +155,16 @@ object PersistentCookieJar : CookieJar {
         var removedAnyPersistent = false
 
         cookieStore.forEach { (cookieDomain, storedCookiesList) ->
-            val iterator = storedCookiesList.iterator()
-            while (iterator.hasNext()) {
-                val sc = iterator.next()
-                // Remove expired persistent cookies
-                if (sc.persistent && sc.expiresAt <= now) {
-                    iterator.remove()
-                    removedAnyPersistent = true
-                    continue
-                }
-                // Domain and path checks per cookie
+            // CopyOnWriteArrayListはiterator.remove()をサポートしないため、removeIf()を使用
+            val removedCount = storedCookiesList.removeIf { sc ->
+                sc.persistent && sc.expiresAt <= now
+            }
+            if (removedCount) {
+                removedAnyPersistent = true
+            }
+
+            // Domain and path checks per cookie
+            storedCookiesList.forEach { sc ->
                 if (domainMatches(sc.domain, sc.hostOnly, requestHost) && pathMatches(sc.path, url.encodedPath)) {
                     if (sc.secure && !url.isHttps) {
                         // skip secure cookie over http
@@ -242,7 +248,9 @@ object PersistentCookieJar : CookieJar {
 
     /**
      * `SharedPreferences` から永続 Cookie を読み込み、期限切れは取り除きます。
+     * 初期化時の競合を防ぐため同期化。
      */
+    @Synchronized
     private fun loadCookiesFromPrefs() {
         cookieStore.clear()
         val keysToRemove = mutableListOf<String>()
