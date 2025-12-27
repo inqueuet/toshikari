@@ -122,6 +122,8 @@ dependencies {
     // Hilt
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
+    // Kotlin 2.3 metadata support for Hilt/KSP processors
+    ksp("org.jetbrains.kotlin:kotlin-metadata-jvm:2.3.0")
     implementation(libs.androidx.hilt.navigation.compose)
 
     // レガシー View 依存は最小限に留めつつ Compose に移行

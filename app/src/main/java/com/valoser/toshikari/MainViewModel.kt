@@ -147,6 +147,8 @@ class MainViewModel @Inject constructor(
 
     private val _imageMap = MutableStateFlow<LinkedHashMap<String, ImageItem>>(createLruImageMap())
     private val _imageList = MutableStateFlow<List<ImageItem>>(emptyList())
+    // カタログの並び順（detailUrl）を保持し、LRUアクセス順の影響を受けないようにする
+    private var imageOrder: List<String> = emptyList()
     @Deprecated("UI 側では imageList を利用する")
     val imageMap: StateFlow<Map<String, ImageItem>> = _imageMap.asStateFlow()
 
@@ -158,7 +160,24 @@ class MainViewModel @Inject constructor(
         val lruMap = createLruImageMap(newMap.size)
         lruMap.putAll(newMap)
         _imageMap.value = lruMap
-        _imageList.value = newList ?: lruMap.values.toList()
+        if (newList != null) {
+            imageOrder = newList.map { it.detailUrl }
+            _imageList.value = newList
+        } else {
+            val ordered = ArrayList<ImageItem>(lruMap.size)
+            val seen = HashSet<String>(lruMap.size)
+            for (key in imageOrder) {
+                val updated = lruMap[key] ?: continue
+                ordered.add(updated)
+                seen.add(key)
+            }
+            if (seen.size != lruMap.size) {
+                for ((key, item) in lruMap) {
+                    if (!seen.contains(key)) ordered.add(item)
+                }
+            }
+            _imageList.value = ordered
+        }
     }
 
     // fetchJob と fetchJobUrl をアトミックに更新するためのロックオブジェクト
