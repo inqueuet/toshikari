@@ -45,7 +45,7 @@ object ArchiveStorageResolver {
                         }
                     }
                 }
-                root!!
+                root ?: throw IllegalStateException("Failed to resolve cache root directory")
             }
             ArchiveScope.USER_EXPORT -> {
                 var root = cachedExportRoot
@@ -58,7 +58,7 @@ object ArchiveStorageResolver {
                         }
                     }
                 }
-                root!!
+                root ?: throw IllegalStateException("Failed to resolve export root directory")
             }
         }
     }

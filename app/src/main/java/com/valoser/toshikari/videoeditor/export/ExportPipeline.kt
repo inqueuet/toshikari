@@ -96,11 +96,11 @@ class ExportPipelineImpl @Inject constructor(
             val muxerLock = Any()
             val muxerStarted = java.util.concurrent.atomic.AtomicBoolean(false)
 
-            // 途中で参照するためのヘルパー(null 安全のため lateinit 回避)
+            // 途中で参照するためのヘルパー(null 安全のため nullable 使用)
             var audioTrackIndexForLog = -1
 
-            lateinit var videoProcessor: VideoProcessor
-            lateinit var audioProcessor: AudioProcessor
+            var videoProcessor: VideoProcessor? = null
+            var audioProcessor: AudioProcessor? = null
 
             val videoEncoder = VideoProcessor.createEncoder(exportSpec, targetWidth, targetHeight)
             val audioEncoder = AudioProcessor.createEncoder(exportSpec)
@@ -125,9 +125,9 @@ class ExportPipelineImpl @Inject constructor(
             val startMuxerIfReady: () -> Unit = {
                 synchronized(muxerLock) {
                     // --- 冪等・再入可能な Muxer 起動ゲート ---
-                    val vIndex = runCatching { videoProcessor.getTrackIndex() }.getOrDefault(-1)
-                    val aIndex = runCatching { audioProcessor.getTrackIndex() }.getOrDefault(-1)
-                    val audioFailed = runCatching { audioProcessor.hasFailed() }.getOrDefault(false)
+                    val vIndex = runCatching { videoProcessor?.getTrackIndex() ?: -1 }.getOrDefault(-1)
+                    val aIndex = runCatching { audioProcessor?.getTrackIndex() ?: -1 }.getOrDefault(-1)
+                    val audioFailed = runCatching { audioProcessor?.hasFailed() ?: false }.getOrDefault(false)
                     audioTrackIndexForLog = aIndex
 
                     val ready = (vIndex >= 0) && (!hasAudioNeeded || aIndex >= 0 || audioFailed)
@@ -142,9 +142,9 @@ class ExportPipelineImpl @Inject constructor(
                             Log.d(TAG, "Muxer started: videoTrack=$vIndex, audioTrack=$aIndex, hasAudioNeeded=$hasAudioNeeded, audioFailed=$audioFailed, mode=${if (hasAudioNeeded && !audioFailed) "video+audio" else "video-only"}")
 
                             // === 起動直後に書き込み可能状態へ ===
-                            videoProcessor.setMuxerStarted(true)
-                            videoProcessor.onMuxerStartedLocked()
-                            runCatching { audioProcessor.setMuxerStarted(true) }
+                            videoProcessor?.setMuxerStarted(true)
+                            videoProcessor?.onMuxerStartedLocked()
+                            runCatching { audioProcessor?.setMuxerStarted(true) }
                         }
                     }
                 }
@@ -204,11 +204,12 @@ class ExportPipelineImpl @Inject constructor(
 
                 for (clip in session.videoClips) {
                     // Audio処理(既にwithContext(Dispatchers.IO)内)
-                    val aRes = audioProcessor.processClip(clip, audioPtsOffsetUs)
+                    val aRes = audioProcessor?.processClip(clip, audioPtsOffsetUs)
+                        ?: throw IllegalStateException("AudioProcessor not initialized")
                     audioPtsOffsetUs += aRes.durationUs
 
                     // Video処理
-                    val vRes = videoProcessor.processClip(
+                    val vRes = videoProcessor?.processClip(
                         clip,
                         encoderInputSurface,
                         activeDecoderSurface,
@@ -219,7 +220,7 @@ class ExportPipelineImpl @Inject constructor(
 
                         // ✅ 進捗通知だけメインスレッドで
                         // emit(ExportProgress(currentFrames, totalFrames, percent, 0))
-                    }
+                    } ?: throw IllegalStateException("VideoProcessor not initialized")
                     videoPtsOffsetUs += vRes.durationUs
                 }
 
@@ -235,11 +236,11 @@ class ExportPipelineImpl @Inject constructor(
                         )
                     }
                 }
-                audioProcessor.drainAudioEncoder(true)
+                audioProcessor?.drainAudioEncoder(true)
 
                 // 続いて Video に EOS を投げてから最後までドレイン
                 videoEncoder.signalEndOfInputStream()
-                videoProcessor.drainEncoder(true)
+                videoProcessor?.drainEncoder(true)
 
             } catch (e: Exception) {
                 Log.e(TAG, "Export failed", e)
@@ -258,32 +259,32 @@ class ExportPipelineImpl @Inject constructor(
                 }
                 try {
                     videoEncoder.stop()
-                } catch (_: Throwable) {}
+                } catch (e: Throwable) { Log.d(TAG, "Cleanup: video encoder stop failed (expected if already stopped)", e) }
                 try {
                     videoEncoder.release()
-                } catch (_: Throwable) {}
+                } catch (e: Throwable) { Log.d(TAG, "Cleanup: video encoder release failed", e) }
                 try {
                     audioEncoder?.stop()
-                } catch (_: Throwable) {}
+                } catch (e: Throwable) { Log.d(TAG, "Cleanup: audio encoder stop failed (expected if already stopped)", e) }
                 try {
                     audioEncoder?.release()
-                } catch (_: Throwable) {}
+                } catch (e: Throwable) { Log.d(TAG, "Cleanup: audio encoder release failed", e) }
 
                 // Release EGL surfaces last
                 try {
                     withContext(glDispatcher) {
                         decoderSurface?.let {
-                            try { it.release() } catch (_: Throwable) {}
+                            try { it.release() } catch (e: Throwable) { Log.d(TAG, "Cleanup: decoder surface release failed", e) }
                         }
-                        try { encoderInputSurface.release() } catch (_: Throwable) {}
+                        try { encoderInputSurface.release() } catch (e: Throwable) { Log.d(TAG, "Cleanup: encoder surface release failed", e) }
                     }
-                } catch (_: Throwable) {}
+                } catch (e: Throwable) { Log.d(TAG, "Cleanup: EGL surfaces cleanup failed", e) }
 
                 if (muxerStarted.get()) {
-                    try { muxer.stop() } catch (_: Throwable) {}
+                    try { muxer.stop() } catch (e: Throwable) { Log.d(TAG, "Cleanup: muxer stop failed", e) }
                 }
-                try { muxer.release() } catch (_: Throwable) {}
-                try { pfd.close() } catch (_: Throwable) {}
+                try { muxer.release() } catch (e: Throwable) { Log.d(TAG, "Cleanup: muxer release failed", e) }
+                try { pfd.close() } catch (e: Throwable) { Log.d(TAG, "Cleanup: file descriptor close failed", e) }
 
                 logMuxerGate("Export finished. (file should be non-empty if muxerStarted=true)")
             }
@@ -430,7 +431,9 @@ private class VideoProcessor(
         Log.d(TAG, "processClip: clip.startTime=${clip.startTime}ms, clip.endTime=${clip.endTime}ms, clip.duration=${clip.duration}ms")
 
         val extractor = MediaExtractor().apply { setDataSource(context, clip.source, null) }
-        val decoder = createDecoder(extractor, decoderOutputSurface.surface)
+        val decoderSurface = decoderOutputSurface.surface
+            ?: throw IllegalStateException("Decoder output surface not initialized")
+        val decoder = createDecoder(extractor, decoderSurface)
             ?: throw RuntimeException("Failed to create video decoder for ${clip.source}")
 
         var framesInClip = 0

@@ -41,22 +41,23 @@ object AppCookieJar : CookieJar {
 
         Log.d("AppCookieJar", "Saved cookies for $host: ${cookieStore[host]?.map { it.name + "=" + it.value }}")
 
+        // WebViewのCookieManager同期（即座に実行されるためメモリリーク懸念は低い）
         val webViewCookieManager = android.webkit.CookieManager.getInstance()
-        // タイムアウト付きでWebViewのCookieManager同期を試行
-        Handler(Looper.getMainLooper()).postDelayed({
+        val urlString = url.toString()
+        val cookieStrings = cookies.map { it.toString() }
+        Handler(Looper.getMainLooper()).post {
             try {
-                cookies.forEach { cookie ->
-                    val cookieString = cookie.toString()
-                    webViewCookieManager.setCookie(url.toString(), cookieString)
-                    Log.d("AppCookieJar", "Set to WebView CookieManager: $cookieString for url $url")
+                cookieStrings.forEach { cookieString ->
+                    webViewCookieManager.setCookie(urlString, cookieString)
+                    Log.d("AppCookieJar", "Set to WebView CookieManager: $cookieString for url $urlString")
                 }
                 webViewCookieManager.flush()
             } catch (e: Exception) {
                 // WebViewへのCookie設定失敗時のエラーログ
                 // WebViewが初期化されていない、またはメモリ不足などの可能性がある
-                Log.w("AppCookieJar", "Failed to sync cookies to WebView for $url: ${e.message}", e)
+                Log.w("AppCookieJar", "Failed to sync cookies to WebView for $urlString: ${e.message}", e)
             }
-        }, 0)
+        }
     }
 
     /**

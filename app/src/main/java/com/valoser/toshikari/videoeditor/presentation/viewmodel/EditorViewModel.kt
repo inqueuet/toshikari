@@ -695,14 +695,11 @@ class EditorViewModel @Inject constructor(
 
         sessionManager.updateSession(newSession)
             .onSuccess {
-                val newSelection =
-                    if (newSelectedVideoId != null) {
-                        Selection.VideoClip(newSelectedVideoId!!)
-                    } else if (newSelectedAudio != null) {
-                        Selection.AudioClip(newSelectedAudio!!.first, newSelectedAudio!!.second)
-                    } else {
-                        _state.value.selection // If nothing was split, keep current selection
-                    }
+                val newSelection = when {
+                    newSelectedVideoId != null -> Selection.VideoClip(newSelectedVideoId)
+                    newSelectedAudio != null -> Selection.AudioClip(newSelectedAudio.first, newSelectedAudio.second)
+                    else -> _state.value.selection // If nothing was split, keep current selection
+                }
 
                 // Calculate new range selection
                 val currentRangeSelection = _state.value.rangeSelection

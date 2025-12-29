@@ -222,14 +222,14 @@ fun EditorScreen(
                     }
 
                     // 範囲削除ボタン
+                    val rangeSelection = state.rangeSelection
                     if (state.mode == com.valoser.toshikari.videoeditor.domain.model.EditMode.RANGE_SELECT
-                        && state.rangeSelection != null) {
+                        && rangeSelection != null) {
                         IconButton(onClick = {
-                            val r = state.rangeSelection!!
                             viewModel.handleIntent(
                                 com.valoser.toshikari.videoeditor.domain.model.EditorIntent.DeleteTimeRange(
-                                    start = r.start.value,
-                                    end = r.end.value,
+                                    start = rangeSelection.start.value,
+                                    end = rangeSelection.end.value,
                                     ripple = true
                                 )
                             )

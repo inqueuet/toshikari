@@ -95,12 +95,14 @@ object PersistentCookieJar : CookieJar {
         saveCookiesToPrefs()
 
         // WebView への Cookie 同期（UI スレッドで実行、エラー発生時は無視）
+        // Handler は即座に実行されるためメモリリーク懸念は低い
+        val cookieStrings = cookies.map { it.toString() }
+        val urlString = url.toString()
         try {
-            val cookieStrings = cookies.map { it.toString() }
             Handler(Looper.getMainLooper()).post {
                 try {
                     val cm = android.webkit.CookieManager.getInstance()
-                    cookieStrings.forEach { cs -> cm.setCookie(url.toString(), cs) }
+                    cookieStrings.forEach { cs -> cm.setCookie(urlString, cs) }
                     cm.flush()
                 } catch (e: Exception) {
                     // WebView が初期化されていない、またはバックグラウンド状態での例外を無視

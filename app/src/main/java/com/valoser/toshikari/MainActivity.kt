@@ -238,7 +238,7 @@ class MainActivity : BaseActivity() {
                 }
 
                 // 更新通知ダイアログ（シンプル版）
-                if (updateInfo != null) {
+                updateInfo?.let { info ->
                     AlertDialog(
                         onDismissRequest = {
                             updateInfo = null
@@ -246,7 +246,7 @@ class MainActivity : BaseActivity() {
                         title = { androidx.compose.material3.Text("お知らせ") },
                         text = {
                             androidx.compose.material3.Text(
-                                "新しいバージョン ${updateInfo!!.version} が利用可能です。"
+                                "新しいバージョン ${info.version} が利用可能です。"
                             )
                         },
                         confirmButton = {

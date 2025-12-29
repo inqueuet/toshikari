@@ -56,9 +56,15 @@ object MetadataExtractor {
         val level = AppPreferences.getConcurrencyLevel(context)
         val desired = permitsForLevel(level)
         if (desired != currentPermits) {
-            // 同期化してセマフォを安全に再作成
-            // AtomicReferenceを使用することで、既存の待機中スレッドも
-            // 次のアクセス時には新しいセマフォを参照できる
+            // Semaphore再作成時の注意: 古いSemaphoreで待機中のスレッドは
+            // 新しいSemaphoreには移行できない。ただし設定変更は稀で、
+            // 古いSemaphoreでの待機も他スレッドのreleaseで解放されるため、
+            // 実用上は大きな問題にならない。より安全にするには
+            // 固定サイズのワーカープール等を使用する必要がある。
+            val oldSemaphore = connectionSemaphoreRef.get()
+            val oldPermits = currentPermits
+            android.util.Log.d("MetadataExtractor",
+                "Concurrency level changed: $oldPermits -> $desired permits (existing waiters may still use old semaphore)")
             currentPermits = desired
             connectionSemaphoreRef.set(Semaphore(desired))
         }

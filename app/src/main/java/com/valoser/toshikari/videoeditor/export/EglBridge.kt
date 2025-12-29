@@ -128,10 +128,10 @@ class DecoderOutputSurface(
     fun getEglDisplay(): EGLDisplay = eglDisplay
     fun getEglContext(): EGLContext = eglContext
     fun getEglSurface(): EGLSurface = eglSurface
-    
+
     private var oesTexId: Int = 0
-    private lateinit var surfaceTexture: SurfaceTexture
-    lateinit var surface: Surface
+    private var surfaceTexture: SurfaceTexture? = null
+    var surface: Surface? = null
         private set
 
     private var frameAvailable = false
@@ -144,8 +144,8 @@ class DecoderOutputSurface(
     private var uSamplerLoc = -1   // ★ sTexture の uniform ロケーション
     private val texMatrix = FloatArray(16)
     private val correctedTexMatrix = FloatArray(16) // ★ 反転補正後を入れる一時配列
-    private lateinit var vb: java.nio.FloatBuffer
-    private lateinit var tb: java.nio.FloatBuffer
+    private var vb: java.nio.FloatBuffer? = null
+    private var tb: java.nio.FloatBuffer? = null
 
     // ★ 元動画のアスペクト比を保存
     private var sourceWidth: Int = 0
@@ -187,10 +187,11 @@ class DecoderOutputSurface(
 
         // OES テクスチャ + SurfaceTexture
         oesTexId = createOesTex()
-        surfaceTexture = SurfaceTexture(oesTexId)
-        surfaceTexture.setDefaultBufferSize(width, height)
-        surfaceTexture.setOnFrameAvailableListener(this)
-        surface = Surface(surfaceTexture)
+        surfaceTexture = SurfaceTexture(oesTexId).also { st ->
+            st.setDefaultBufferSize(width, height)
+            st.setOnFrameAvailableListener(this)
+            surface = Surface(st)
+        }
         Log.d(TAG, "setup: ${width}x${height}, shared=${sharedContext!=null})")
 
         // OES描画初期化
@@ -211,7 +212,7 @@ class DecoderOutputSurface(
         sourceWidth = srcWidth
         sourceHeight = srcHeight
         // ★ vbが未初期化の場合は初期化を促す
-        if (!this::vb.isInitialized) {
+        if (vb == null) {
             Log.w(TAG, "setSourceAspectRatio called before initRenderer, aspect ratio will be applied on init")
         } else {
             updateVertexBuffer()
@@ -233,15 +234,16 @@ private fun updateVertexBuffer() {
              1f,  1f
         )
         
-        if (!this::vb.isInitialized || vb.capacity() < verts.size * 4) {
+        val vertexBuffer = vb
+        if (vertexBuffer == null || vertexBuffer.capacity() < verts.size * 4) {
             vb = java.nio.ByteBuffer.allocateDirect(verts.size * 4)
-            .order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer().put(verts)
+                .order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer().put(verts)
         } else {
-            vb.clear()
-            vb.position(0)
-            vb.put(verts)
+            vertexBuffer.clear()
+            vertexBuffer.position(0)
+            vertexBuffer.put(verts)
         }
-        vb.position(0)
+        vb?.position(0)
         return
     }
 
@@ -270,7 +272,7 @@ private fun updateVertexBuffer() {
     )
     vb = java.nio.ByteBuffer.allocateDirect(verts.size * 4)
         .order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer().put(verts)
-    vb.position(0)
+    vb?.position(0)
 
     val mode = if (srcAspect > dstAspect) "横長動画→レターボックス" else "縦長動画→ピラーボックス"
             Log.d(TAG, "updateVertexBuffer: src=${sourceWidth}x${sourceHeight} (${srcAspect}), " +
@@ -293,8 +295,8 @@ private fun updateVertexBuffer() {
                 }
                 frameAvailable = false
             }
-            surfaceTexture.updateTexImage()
-            surfaceTexture.getTransformMatrix(texMatrix)
+            surfaceTexture?.updateTexImage()
+            surfaceTexture?.getTransformMatrix(texMatrix)
         }
         
         fun awaitNewImage(encoder: EncoderInputSurface) {
@@ -337,9 +339,9 @@ private fun updateVertexBuffer() {
             Log.v(TAG, "awaitNewImage: frame received after $waitIterations iterations")
         }
         Log.v(TAG, "awaitNewImage: calling updateTexImage")
-        surfaceTexture.updateTexImage()
+        surfaceTexture?.updateTexImage()
         Log.v(TAG, "awaitNewImage: calling getTransformMatrix")
-        surfaceTexture.getTransformMatrix(texMatrix)
+        surfaceTexture?.getTransformMatrix(texMatrix)
 
         // ★ 元のコンテキストに戻す
         Log.v(TAG, "awaitNewImage: restoring previous context")
@@ -369,18 +371,27 @@ private fun updateVertexBuffer() {
         Matrix.multiplyMM(correctedTexMatrix, 0, texMatrix, 0, flipV, 0)
         GLES20.glUniformMatrix4fv(uTexMatrixLoc, 1, false, correctedTexMatrix, 0)
 
+        val vertexBuffer = vb ?: run {
+            Log.e(TAG, "drawOes: vertex buffer not initialized")
+            return
+        }
+        val texCoordBuffer = tb ?: run {
+            Log.e(TAG, "drawOes: texture coordinate buffer not initialized")
+            return
+        }
+
         GLES20.glEnableVertexAttribArray(aPosLoc)
-        GLES20.glVertexAttribPointer(aPosLoc, 2, GLES20.GL_FLOAT, false, 0, vb)
+        GLES20.glVertexAttribPointer(aPosLoc, 2, GLES20.GL_FLOAT, false, 0, vertexBuffer)
         GLES20.glEnableVertexAttribArray(aTexLoc)
-        GLES20.glVertexAttribPointer(aTexLoc, 2, GLES20.GL_FLOAT, false, 0, tb)
+        GLES20.glVertexAttribPointer(aTexLoc, 2, GLES20.GL_FLOAT, false, 0, texCoordBuffer)
 
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
     }
 
     fun release() {
         try {
-            if (this::surface.isInitialized) surface.release()
-            if (this::surfaceTexture.isInitialized) surfaceTexture.release()
+            surface?.release()
+            surfaceTexture?.release()
             if (oesTexId != 0) {
                 val tmp = IntArray(1); tmp[0] = oesTexId
                 GLES20.glDeleteTextures(1, tmp, 0)
@@ -440,7 +451,7 @@ private fun updateVertexBuffer() {
             1f, 0f
         )
         tb = java.nio.ByteBuffer.allocateDirect(tex.size * 4).order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer().put(tex)
-        tb.position(0)
+        tb?.position(0)
 
         val vsrc = """
             attribute vec4 aPosition;

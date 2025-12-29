@@ -129,8 +129,9 @@ class DetailActivity : BaseActivity() {
         if (result.resultCode == Activity.RESULT_OK) {
             // 返信成功時に自レス番号を保存（IntentのExtraから取得）
             val resNumber = result.data?.getStringExtra("RES_NUMBER")
-            if (!resNumber.isNullOrBlank() && !currentUrl.isNullOrBlank()) {
-                AppPreferences.addMyPostNumber(this, currentUrl!!, resNumber)
+            val url = currentUrl
+            if (!resNumber.isNullOrBlank() && !url.isNullOrBlank()) {
+                AppPreferences.addMyPostNumber(this, url, resNumber)
             }
             Toast.makeText(this, "送信しました。更新します。", Toast.LENGTH_SHORT).show()
             reloadDetails()
@@ -446,8 +447,9 @@ class DetailActivity : BaseActivity() {
                             if (latestReplyNo > 0 && !threadUrl.isNullOrBlank()) {
                                 HistoryManager.applyFetchResult(this@DetailActivity, threadUrl, latestReplyNo)
                             }
-                        } catch (_: Exception) {
-                            // 例外は無視して UI 更新継続
+                        } catch (e: Exception) {
+                            // 履歴更新失敗はUI更新に影響しないため継続
+                            android.util.Log.w("DetailActivity", "Failed to update history reply count", e)
                         }
 
                         // 履歴のサムネイル更新（OPの画像のみを採用）
@@ -490,8 +492,9 @@ class DetailActivity : BaseActivity() {
                                     HistoryManager.clearThumbnail(this@DetailActivity, threadUrl)
                                 }
                             }
-                        } catch (_: Exception) {
-                            // 例外は無視して UI 更新継続
+                        } catch (e: Exception) {
+                            // サムネイル更新失敗はUI更新に影響しないため継続
+                            android.util.Log.w("DetailActivity", "Failed to update history thumbnail", e)
                         }
                     }
 

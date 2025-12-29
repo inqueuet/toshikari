@@ -1751,10 +1751,11 @@ class DetailViewModel @Inject constructor(
         contentList.forEach { content ->
             when (content) {
                 is DetailContent.Image -> {
-                    if (!content.prompt.isNullOrBlank()) {
+                    val promptValue = content.prompt
+                    if (!promptValue.isNullOrBlank()) {
                         // 既にプロンプトがある場合はキャッシュにも反映しておく
                         viewModelScope.launch(Dispatchers.IO) {
-                            runCatching { metadataCache.put(content.imageUrl, content.prompt!!) }
+                            runCatching { metadataCache.put(content.imageUrl, promptValue) }
                         }
                         return@forEach
                     }

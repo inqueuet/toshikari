@@ -826,7 +826,7 @@ class MainViewModel @Inject constructor(
 
             parsedItems.add(
                 ImageItem(
-                    previewUrl = imageUrl!!,
+                    previewUrl = imageUrl, // imageUrl is guaranteed non-null by continue check above
                     title = title,
                     replyCount = replies,
                     detailUrl = detailUrl,
