@@ -30,6 +30,9 @@ replay_pid*
 .idea/
 *.iml
 
+# macOS
+.DS_Store
+
 # Local properties
 local.properties
 
