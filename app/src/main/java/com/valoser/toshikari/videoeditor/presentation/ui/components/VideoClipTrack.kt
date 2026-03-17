@@ -32,7 +32,6 @@ import kotlin.math.max
 fun VideoClipTrack(
     clips: List<VideoClip>,
     selection: Selection?,
-    playhead: Long,
     zoom: Float,
     timelineDuration: Long,
     mode: EditMode,

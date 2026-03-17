@@ -36,7 +36,6 @@ import kotlin.math.max
 fun AudioClipTrack(
     track: AudioTrack,
     selection: Selection?,
-    playhead: Long,
     zoom: Float,
     timelineDuration: Long,
     mode: EditMode,

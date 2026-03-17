@@ -2,6 +2,7 @@ package com.valoser.toshikari.videoeditor.data.usecase
 
 import android.net.Uri
 import com.valoser.toshikari.videoeditor.domain.model.EditorSession
+import com.valoser.toshikari.videoeditor.domain.model.ExportOptions
 import com.valoser.toshikari.videoeditor.domain.model.ExportProgress
 import com.valoser.toshikari.videoeditor.domain.usecase.ExportVideoUseCase
 import com.valoser.toshikari.videoeditor.export.ExportPipeline
@@ -17,8 +18,9 @@ class ExportVideoUseCaseImpl @Inject constructor(
 
     override fun export(
         session: EditorSession,
-        outputUri: Uri
+        outputUri: Uri,
+        exportOptions: ExportOptions
     ): Flow<ExportProgress> {
-        return exportPipeline.export(session, outputUri)
+        return exportPipeline.export(session, outputUri, exportOptions)
     }
 }

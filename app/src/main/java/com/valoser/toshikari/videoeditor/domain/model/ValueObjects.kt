@@ -80,6 +80,30 @@ data class ExportSettings(
     val outputPath: String
 )
 
+enum class ExportCompression(
+    val displayName: String,
+    val videoBitratePercent: Int,
+    val audioBitrate: Int
+) {
+    HIGH("高圧縮", 60, 128_000),
+    STANDARD("標準", 100, 192_000),
+    LOW("低圧縮", 150, 256_000)
+}
+
+data class ExportOptions(
+    val resolution: Resolution = Resolution.HD1080,
+    val compression: ExportCompression = ExportCompression.STANDARD,
+    val frameRate: Int = 30,
+    val audioSampleRate: Int = 48_000,
+    val audioChannels: Int = 2
+) {
+    val width: Int get() = resolution.width
+    val height: Int get() = resolution.height
+    val videoBitrate: Int
+        get() = (resolution.defaultVideoBitrate * compression.videoBitratePercent) / 100
+    val audioBitrate: Int get() = compression.audioBitrate
+}
+
 /**
  * エクスポートプリセット
  */
@@ -118,6 +142,12 @@ enum class ExportPreset(
     val height: Int get() = resolution.height
     val frameRate: Int get() = fps
 }
+
+private val Resolution.defaultVideoBitrate: Int
+    get() = when (this) {
+        Resolution.HD720 -> 8_000_000
+        Resolution.HD1080 -> 12_000_000
+    }
 
 /**
  * エクスポート進捗

@@ -20,7 +20,6 @@ import androidx.compose.ui.unit.dp
 @Composable
 fun KeyframeBar(
     track: com.valoser.toshikari.videoeditor.domain.model.AudioTrack,
-    playhead: Long,
     zoom: Float,
     onKeyframeClick: (String, String, com.valoser.toshikari.videoeditor.domain.model.Keyframe) -> Unit,
     modifier: Modifier = Modifier
@@ -80,14 +79,5 @@ fun KeyframeBar(
                 }
             }
         }
-
-        // プレイヘッド描画
-        val playheadX = (playhead * zoom)
-        drawLine(
-            color = Color.Red,
-            start = Offset(playheadX, 0f),
-            end = Offset(playheadX, size.height),
-            strokeWidth = 2.dp.toPx()
-        )
     }
 }

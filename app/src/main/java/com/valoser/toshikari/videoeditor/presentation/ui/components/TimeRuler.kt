@@ -22,7 +22,6 @@ import com.valoser.toshikari.videoeditor.domain.model.Marker
 @Composable
 fun TimeRuler(
     duration: Long,
-    playhead: Long,
     zoom: Float,
     markers: List<Marker>,
     splitMarkerPosition: Long?,

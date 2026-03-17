@@ -30,7 +30,6 @@ import kotlin.math.max
 fun WaveformView(
     waveformGenerator: WaveformGenerator,
     track: AudioTrack,
-    playhead: Long,
     zoom: Float,
     timelineDuration: Long,
     modifier: Modifier = Modifier

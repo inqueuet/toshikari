@@ -20,6 +20,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import com.valoser.toshikari.videoeditor.domain.model.EditorSession
 import com.valoser.toshikari.videoeditor.domain.model.Selection
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -39,6 +40,7 @@ import kotlin.math.roundToInt
  * フィルムストリップ、映像クリップ、音声トラック、波形を表示
  * 中央に固定されたプレイヘッドを持つ
  */
+@OptIn(FlowPreview::class)
 @Composable
 fun TimelineView(
     waveformGenerator: com.valoser.toshikari.videoeditor.media.audio.WaveformGenerator,
@@ -203,7 +205,6 @@ fun TimelineView(
                     // フィルムストリップ（64dp高さ）
                     FilmStripView(
                         clips = session.videoClips,
-                        playhead = playhead,
                         zoom = zoom,
                         timelineDuration = timelineDuration,
                         requestedStartMs = requestedStartMs,
@@ -219,7 +220,6 @@ fun TimelineView(
                     VideoClipTrack(
                         clips = session.videoClips,
                         selection = selection,
-                        playhead = playhead,
                         zoom = zoom,
                         timelineDuration = timelineDuration,
                         onClipSelected = onClipSelected,
@@ -247,7 +247,6 @@ fun TimelineView(
                         AudioClipTrack(
                             track = track,
                             selection = selection,
-                            playhead = playhead,
                             zoom = zoom,
                             timelineDuration = timelineDuration,
                             onClipSelected = onAudioClipSelected,
@@ -264,7 +263,6 @@ fun TimelineView(
                         // キーフレームバー（32dp高さ）
                         KeyframeBar(
                             track = track,
-                            playhead = playhead,
                             zoom = zoom,
                             onKeyframeClick = { trackId, clipId, keyframe -> onKeyframeClick(trackId, clipId, keyframe) },
                             modifier = Modifier
@@ -276,7 +274,6 @@ fun TimelineView(
                         WaveformView(
                             waveformGenerator = waveformGenerator,
                             track = track,
-                            playhead = playhead,
                             zoom = zoom,
                             timelineDuration = timelineDuration,
                             modifier = Modifier
@@ -290,7 +287,6 @@ fun TimelineView(
                     // 時間軸（32dp高さ）
                     TimeRuler(
                         duration = session.duration,
-                        playhead = playhead,
                         zoom = zoom,
                         markers = session.markers,
                         splitMarkerPosition = splitMarkerPosition,

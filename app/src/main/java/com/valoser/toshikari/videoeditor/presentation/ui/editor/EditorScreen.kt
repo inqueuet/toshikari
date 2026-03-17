@@ -7,9 +7,14 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.valoser.toshikari.videoeditor.domain.model.ExportCompression
+import com.valoser.toshikari.videoeditor.domain.model.ExportOptions
+import com.valoser.toshikari.videoeditor.domain.model.Resolution
 import com.valoser.toshikari.videoeditor.presentation.viewmodel.EditorViewModel
 import com.valoser.toshikari.videoeditor.presentation.ui.components.TimelineView
 import com.valoser.toshikari.videoeditor.presentation.ui.components.PreviewView
@@ -37,6 +42,8 @@ import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material.icons.filled.ZoomOut
 import androidx.compose.material3.Slider
 import androidx.compose.ui.Alignment
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlin.math.roundToInt
 
 /**
@@ -48,7 +55,58 @@ fun EditorScreen(
     viewModel: EditorViewModel = hiltViewModel(),
     onBack: () -> Unit = {}
 ) {
-    val state by viewModel.state.collectAsState()
+    val sessionFlow = remember(viewModel) {
+        viewModel.state.map { it.session }.distinctUntilChanged()
+    }
+    val selectionFlow = remember(viewModel) {
+        viewModel.state.map { it.selection }.distinctUntilChanged()
+    }
+    val isPlayingFlow = remember(viewModel) {
+        viewModel.state.map { it.isPlaying }.distinctUntilChanged()
+    }
+    val zoomFlow = remember(viewModel) {
+        viewModel.state.map { it.zoom }.distinctUntilChanged()
+    }
+    val isLoadingFlow = remember(viewModel) {
+        viewModel.state.map { it.isLoading }.distinctUntilChanged()
+    }
+    val exportProgressFlow = remember(viewModel) {
+        viewModel.state.map { it.exportProgress }.distinctUntilChanged()
+    }
+    val errorFlow = remember(viewModel) {
+        viewModel.state.map { it.error }.distinctUntilChanged()
+    }
+    val modeFlow = remember(viewModel) {
+        viewModel.state.map { it.mode }.distinctUntilChanged()
+    }
+    val rangeSelectionFlow = remember(viewModel) {
+        viewModel.state.map { it.rangeSelection }.distinctUntilChanged()
+    }
+    val splitMarkerPositionFlow = remember(viewModel) {
+        viewModel.state.map { it.splitMarkerPosition }.distinctUntilChanged()
+    }
+
+    val session by sessionFlow.collectAsStateWithLifecycle(initialValue = null)
+    val selection by selectionFlow.collectAsStateWithLifecycle(initialValue = null)
+    val isPlaying by isPlayingFlow.collectAsStateWithLifecycle(initialValue = false)
+    val zoom by zoomFlow.collectAsStateWithLifecycle(initialValue = 1f)
+    val isLoading by isLoadingFlow.collectAsStateWithLifecycle(initialValue = false)
+    val exportProgress by exportProgressFlow.collectAsStateWithLifecycle(initialValue = null)
+    val error by errorFlow.collectAsStateWithLifecycle(initialValue = null)
+    val mode by modeFlow.collectAsStateWithLifecycle(
+        initialValue = com.valoser.toshikari.videoeditor.domain.model.EditMode.NORMAL
+    )
+    val rangeSelection by rangeSelectionFlow.collectAsStateWithLifecycle(initialValue = null)
+    val splitMarkerPosition by splitMarkerPositionFlow.collectAsStateWithLifecycle(initialValue = null)
+
+    var showExportDialog by remember { mutableStateOf(false) }
+    var pendingExportOptions by remember { mutableStateOf(ExportOptions()) }
+    var exportResolution by rememberSaveable(session?.id) {
+        mutableStateOf(session?.settings?.resolution ?: Resolution.HD1080)
+    }
+    var exportCompression by rememberSaveable(session?.id) {
+        mutableStateOf(ExportCompression.STANDARD)
+    }
     var showTransitionDialog by remember { mutableStateOf(false) }
     var selectedTransitionPosition by remember { mutableStateOf(0L) }
 
@@ -59,7 +117,8 @@ fun EditorScreen(
         uri?.let { outputUri ->
             viewModel.handleIntent(
                 com.valoser.toshikari.videoeditor.domain.model.EditorIntent.Export(
-                    outputUri = outputUri
+                    outputUri = outputUri,
+                    exportOptions = pendingExportOptions
                 )
             )
         }
@@ -73,7 +132,7 @@ fun EditorScreen(
                 com.valoser.toshikari.videoeditor.domain.model.EditorIntent.AddAudioTrack(
                     name = "New Audio",
                     audioUri = audioUri,
-                    position = state.playhead
+                    position = viewModel.state.value.playhead
                 )
             )
         }
@@ -83,8 +142,8 @@ fun EditorScreen(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         uri?.let { audioUri ->
-            val selection = state.selection as? com.valoser.toshikari.videoeditor.domain.model.Selection.AudioClip
-            val range = state.rangeSelection
+            val selection = viewModel.state.value.selection as? com.valoser.toshikari.videoeditor.domain.model.Selection.AudioClip
+            val range = viewModel.state.value.rangeSelection
             if (selection != null && range != null) {
                 viewModel.handleIntent(
                     com.valoser.toshikari.videoeditor.domain.model.EditorIntent.ReplaceAudio(
@@ -116,7 +175,7 @@ fun EditorScreen(
                         onClick = {
                             viewModel.handleIntent(com.valoser.toshikari.videoeditor.domain.model.EditorIntent.Undo)
                         },
-                        enabled = state.session != null && !state.isLoading
+                        enabled = session != null && !isLoading
                     ) {
                         Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Undo")
                     }
@@ -126,14 +185,14 @@ fun EditorScreen(
                         onClick = {
                             viewModel.handleIntent(com.valoser.toshikari.videoeditor.domain.model.EditorIntent.Redo)
                         },
-                        enabled = state.session != null && !state.isLoading
+                        enabled = session != null && !isLoading
                     ) {
                         Icon(Icons.AutoMirrored.Filled.Redo, contentDescription = "Redo")
                     }
 
                     TextButton(
-                        onClick = { exportLauncher.launch("edited_video.mp4") },
-                        enabled = state.session != null && !state.isLoading
+                        onClick = { showExportDialog = true },
+                        enabled = session != null && !isLoading
                     ) {
                         Text("書き出し")
                     }
@@ -148,9 +207,9 @@ fun EditorScreen(
         ) {
             PreviewView(
                 player = viewModel.playerEngine.player,
-                isPlaying = state.isPlaying,
+                isPlaying = isPlaying,
                 onPlayPause = {
-                    if (state.isPlaying) {
+                    if (isPlaying) {
                         viewModel.handleIntent(com.valoser.toshikari.videoeditor.domain.model.EditorIntent.Pause)
                     } else {
                         viewModel.handleIntent(com.valoser.toshikari.videoeditor.domain.model.EditorIntent.Play)
@@ -184,7 +243,7 @@ fun EditorScreen(
                                 com.valoser.toshikari.videoeditor.domain.model.EditorIntent.SeekTo(0L)
                             )
                         },
-                        enabled = state.session != null
+                        enabled = session != null
                     ) {
                         Icon(Icons.Default.SkipPrevious, contentDescription = "Seek to Start")
                     }
@@ -192,40 +251,40 @@ fun EditorScreen(
                     // ズームアウト
                     IconButton(
                         onClick = {
-                            val newZoom = (state.zoom - 0.25f).coerceAtLeast(0.25f)
+                            val newZoom = (zoom - 0.25f).coerceAtLeast(0.25f)
                             viewModel.handleIntent(
                                 com.valoser.toshikari.videoeditor.domain.model.EditorIntent.SetZoom(newZoom)
                             )
                         },
-                        enabled = state.zoom > 0.25f
+                        enabled = zoom > 0.25f
                     ) {
                         Icon(Icons.Default.ZoomOut, contentDescription = "Zoom Out")
                     }
 
                     // ズーム表示
                     Text(
-                        text = "ズーム: ${String.format("%.2f", state.zoom)}x",
+                        text = "ズーム: ${String.format("%.2f", zoom)}x",
                         style = MaterialTheme.typography.bodyMedium
                     )
 
                     // ズームイン
                     IconButton(
                         onClick = {
-                            val newZoom = (state.zoom + 0.25f).coerceAtMost(4f)
+                            val newZoom = (zoom + 0.25f).coerceAtMost(4f)
                             viewModel.handleIntent(
                                 com.valoser.toshikari.videoeditor.domain.model.EditorIntent.SetZoom(newZoom)
                             )
                         },
-                        enabled = state.zoom < 4f
+                        enabled = zoom < 4f
                     ) {
                         Icon(Icons.Default.ZoomIn, contentDescription = "Zoom In")
                     }
 
                     // 範囲削除ボタン
-                    if (state.mode == com.valoser.toshikari.videoeditor.domain.model.EditMode.RANGE_SELECT
-                        && state.rangeSelection != null) {
+                    if (mode == com.valoser.toshikari.videoeditor.domain.model.EditMode.RANGE_SELECT
+                        && rangeSelection != null) {
                         IconButton(onClick = {
-                            val r = state.rangeSelection!!
+                            val r = rangeSelection!!
                             viewModel.handleIntent(
                                 com.valoser.toshikari.videoeditor.domain.model.EditorIntent.DeleteTimeRange(
                                     start = r.start.value,
@@ -241,13 +300,13 @@ fun EditorScreen(
                     // 最後へ移動
                     IconButton(
                         onClick = {
-                            state.session?.let { session ->
+                            session?.let { currentSession ->
                                 viewModel.handleIntent(
-                                    com.valoser.toshikari.videoeditor.domain.model.EditorIntent.SeekTo(session.duration)
+                                    com.valoser.toshikari.videoeditor.domain.model.EditorIntent.SeekTo(currentSession.duration)
                                 )
                             }
                         },
-                        enabled = state.session != null
+                        enabled = session != null
                     ) {
                         Icon(Icons.Default.SkipNext, contentDescription = "Seek to End")
                     }
@@ -255,88 +314,16 @@ fun EditorScreen(
             }
 
             // タイムライン（残り）
-            state.session?.let { session ->
-                TimelineView(
-                    waveformGenerator = viewModel.waveformGenerator,
-                    session = session,
-                    selection = state.selection,
-                    playhead = state.playhead,
-                    isPlaying = state.isPlaying,
-                    zoom = state.zoom,
-                    splitMarkerPosition = state.splitMarkerPosition,
-                    onClipSelected = { clipId ->
-                        viewModel.handleIntent(
-                            com.valoser.toshikari.videoeditor.domain.model.EditorIntent.SelectClip(
-                                com.valoser.toshikari.videoeditor.domain.model.Selection.VideoClip(clipId)
-                            )
-                        )
-                    },
-                    onClipTrimmed = { clipId, start, end ->
-                        viewModel.handleIntent(
-                            com.valoser.toshikari.videoeditor.domain.model.EditorIntent.TrimClip(
-                                clipId, start, end
-                            )
-                        )
-                    },
-                    onClipMoved = { clipId, position ->
-                        viewModel.handleIntent(
-                            com.valoser.toshikari.videoeditor.domain.model.EditorIntent.MoveClip(
-                                clipId, position
-                            )
-                        )
-                    },
-                    onAudioClipSelected = { trackId, clipId ->
-                        viewModel.handleIntent(
-                            com.valoser.toshikari.videoeditor.domain.model.EditorIntent.SelectClip(
-                                com.valoser.toshikari.videoeditor.domain.model.Selection.AudioClip(trackId, clipId)
-                            )
-                        )
-                    },
-                    onAudioClipTrimmed = { trackId, clipId, start, end ->
-                        viewModel.handleIntent(
-                            com.valoser.toshikari.videoeditor.domain.model.EditorIntent.TrimAudioClip(
-                                trackId, clipId, start, end
-                            )
-                        )
-                    },
-                    onAudioClipMoved = { trackId, clipId, position ->
-                        viewModel.handleIntent(
-                            com.valoser.toshikari.videoeditor.domain.model.EditorIntent.MoveAudioClip(
-                                trackId, clipId, position
-                            )
-                        )
-                    },
-                    onZoomChange = { newZoom ->
-                        viewModel.handleIntent(
-                            com.valoser.toshikari.videoeditor.domain.model.EditorIntent.SetZoom(newZoom)
-                        )
-                    },
-                    onSeek = { t -> // ★追加
-                        viewModel.handleIntent(
-                            com.valoser.toshikari.videoeditor.domain.model.EditorIntent.SeekTo(t)
-                        )
-                    },
-                    onMarkerClick = { marker ->
-                        viewModel.handleIntent(
-                            com.valoser.toshikari.videoeditor.domain.model.EditorIntent.RemoveMarker(marker.time)
-                        )
-                    },
-                    onKeyframeClick = { trackId, clipId, keyframe ->
-                        viewModel.handleIntent(
-                            com.valoser.toshikari.videoeditor.domain.model.EditorIntent.RemoveVolumeKeyframe(
-                                trackId,
-                                clipId,
-                                keyframe
-                            )
-                        )
-                    },
-                    mode = state.mode,
-                    rangeSelection = state.rangeSelection,
-                    onRangeChange = { start, end ->
-                        viewModel.handleIntent(
-                            com.valoser.toshikari.videoeditor.domain.model.EditorIntent.SetRangeSelection(start, end)
-                        )
-                    },
+            session?.let { currentSession ->
+                EditorTimelinePane(
+                    viewModel = viewModel,
+                    session = currentSession,
+                    selection = selection,
+                    isPlaying = isPlaying,
+                    zoom = zoom,
+                    splitMarkerPosition = splitMarkerPosition,
+                    mode = mode,
+                    rangeSelection = rangeSelection,
                     onTransitionClick = { position ->
                         selectedTransitionPosition = position
                         showTransitionDialog = true
@@ -360,52 +347,52 @@ fun EditorScreen(
             )
 
             // Inspector panel (slides in when a clip is selected)
-            AnimatedVisibility(visible = state.selection != null) {
-                val audioSelection = state.selection as? com.valoser.toshikari.videoeditor.domain.model.Selection.AudioClip
+            AnimatedVisibility(visible = selection != null) {
+                val audioSelection = selection as? com.valoser.toshikari.videoeditor.domain.model.Selection.AudioClip
                 val selectedAudioClip = audioSelection?.let { sel ->
-                    state.session?.audioTracks?.find { it.id == sel.trackId }?.clips?.find { it.id == sel.clipId }
+                    session?.audioTracks?.find { it.id == sel.trackId }?.clips?.find { it.id == sel.clipId }
                 }
 
                 InspectorPanel(
-                    selection = state.selection,
+                    selection = selection,
                     clipVolume = selectedAudioClip?.volume,
                     isClipMuted = selectedAudioClip?.muted,
                     onDeleteClick = {
-                        Log.d("EditorScreen", "Delete button clicked, selection: ${state.selection}")
-                        when (val selection = state.selection) {
+                        Log.d("EditorScreen", "Delete button clicked, selection: $selection")
+                        when (val currentSelection = selection) {
                             is com.valoser.toshikari.videoeditor.domain.model.Selection.VideoClip -> {
-                                Log.d("EditorScreen", "Deleting video clip: ${selection.clipId}")
+                                Log.d("EditorScreen", "Deleting video clip: ${currentSelection.clipId}")
                                 viewModel.handleIntent(
-                                    com.valoser.toshikari.videoeditor.domain.model.EditorIntent.DeleteClip(selection.clipId)
+                                    com.valoser.toshikari.videoeditor.domain.model.EditorIntent.DeleteClip(currentSelection.clipId)
                                 )
                             }
                             is com.valoser.toshikari.videoeditor.domain.model.Selection.AudioClip -> {
-                                Log.d("EditorScreen", "Deleting audio clip: ${selection.clipId}")
+                                Log.d("EditorScreen", "Deleting audio clip: ${currentSelection.clipId}")
                                 viewModel.handleIntent(
                                     com.valoser.toshikari.videoeditor.domain.model.EditorIntent.DeleteAudioClip(
-                                        selection.trackId,
-                                        selection.clipId
+                                        currentSelection.trackId,
+                                        currentSelection.clipId
                                     )
                                 )
                             }
                             else -> {
-                                Log.w("EditorScreen", "Delete clicked but selection is: ${selection}")
+                                Log.w("EditorScreen", "Delete clicked but selection is: $currentSelection")
                             }
                         }
                         viewModel.handleIntent(com.valoser.toshikari.videoeditor.domain.model.EditorIntent.ClearSelection)
                     },
                     onCopyClick = {
-                        when (val selection = state.selection) {
+                        when (val currentSelection = selection) {
                             is com.valoser.toshikari.videoeditor.domain.model.Selection.VideoClip -> {
                                 viewModel.handleIntent(
-                                    com.valoser.toshikari.videoeditor.domain.model.EditorIntent.CopyClip(selection.clipId)
+                                    com.valoser.toshikari.videoeditor.domain.model.EditorIntent.CopyClip(currentSelection.clipId)
                                 )
                             }
                             is com.valoser.toshikari.videoeditor.domain.model.Selection.AudioClip -> {
                                 viewModel.handleIntent(
                                     com.valoser.toshikari.videoeditor.domain.model.EditorIntent.CopyAudioClip(
-                                        selection.trackId,
-                                        selection.clipId
+                                        currentSelection.trackId,
+                                        currentSelection.clipId
                                     )
                                 )
                             }
@@ -463,8 +450,8 @@ fun EditorScreen(
     }
 
     // エラー表示
-    state.error?.let { error ->
-        LaunchedEffect(error) {
+    error?.let { message ->
+        LaunchedEffect(message) {
             // Snackbarなどで表示
         }
     }
@@ -481,7 +468,7 @@ fun EditorScreen(
                     Row {
                         transitionDurations.forEach { duration ->
                             TextButton(onClick = {
-                                val clip = state.session?.videoClips?.find { it.position + it.duration == selectedTransitionPosition }
+                                val clip = session?.videoClips?.find { it.position + it.duration == selectedTransitionPosition }
                                 if (clip != null) {
                                     viewModel.handleIntent(
                                         com.valoser.toshikari.videoeditor.domain.model.EditorIntent.AddTransition(
@@ -503,8 +490,82 @@ fun EditorScreen(
         )
     }
 
+    if (showExportDialog) {
+        val currentSession = session
+        AlertDialog(
+            onDismissRequest = { showExportDialog = false },
+            title = { Text("書き出し設定") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("解像度")
+                    Resolution.entries.forEach { resolution ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = exportResolution == resolution,
+                                onClick = { exportResolution = resolution }
+                            )
+                            Text("${resolution.width} x ${resolution.height}")
+                        }
+                    }
+
+                    HorizontalDivider()
+
+                    Text("圧縮率")
+                    ExportCompression.entries.forEach { compression ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = exportCompression == compression,
+                                onClick = { exportCompression = compression }
+                            )
+                            Text(compression.displayName)
+                        }
+                    }
+
+                    val previewOptions = ExportOptions(
+                        resolution = exportResolution,
+                        compression = exportCompression,
+                        frameRate = currentSession?.settings?.fps ?: 30,
+                        audioSampleRate = currentSession?.settings?.sampleRate ?: 48_000
+                    )
+                    HorizontalDivider()
+                    Text("出力: ${previewOptions.width} x ${previewOptions.height}")
+                    Text("映像ビットレート: ${formatBitrate(previewOptions.videoBitrate)}")
+                    Text("音声ビットレート: ${formatBitrate(previewOptions.audioBitrate)}")
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pendingExportOptions = ExportOptions(
+                            resolution = exportResolution,
+                            compression = exportCompression,
+                            frameRate = currentSession?.settings?.fps ?: 30,
+                            audioSampleRate = currentSession?.settings?.sampleRate ?: 48_000
+                        )
+                        showExportDialog = false
+                        exportLauncher.launch("edited_video.mp4")
+                    },
+                    enabled = currentSession != null
+                ) {
+                    Text("保存先を選択")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showExportDialog = false }) {
+                    Text("キャンセル")
+                }
+            }
+        )
+    }
+
     // ローディング表示
-    if (state.isLoading) {
+    if (isLoading) {
         Box(
             modifier = Modifier.fillMaxSize(),
             contentAlignment = androidx.compose.ui.Alignment.Center
@@ -513,7 +574,7 @@ fun EditorScreen(
                 horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                val clampedProgress = state.exportProgress?.coerceIn(0f, 100f)
+                val clampedProgress = exportProgress?.coerceIn(0f, 100f)
                 if (clampedProgress != null) {
                     CircularProgressIndicator(progress = { clampedProgress / 100f })
                     Text("エクスポート中... ${clampedProgress.roundToInt()}%")
@@ -524,4 +585,117 @@ fun EditorScreen(
             }
         }
     }
+}
+
+private fun formatBitrate(bitsPerSecond: Int): String {
+    val mbps = bitsPerSecond / 1_000_000f
+    return if (mbps >= 1f) {
+        String.format("%.1f Mbps", mbps)
+    } else {
+        String.format("%d kbps", bitsPerSecond / 1000)
+    }
+}
+
+@Composable
+private fun EditorTimelinePane(
+    viewModel: EditorViewModel,
+    session: com.valoser.toshikari.videoeditor.domain.model.EditorSession,
+    selection: com.valoser.toshikari.videoeditor.domain.model.Selection?,
+    isPlaying: Boolean,
+    zoom: Float,
+    splitMarkerPosition: Long?,
+    mode: com.valoser.toshikari.videoeditor.domain.model.EditMode,
+    rangeSelection: com.valoser.toshikari.videoeditor.domain.model.TimeRange?,
+    onTransitionClick: (Long) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val playheadFlow = remember(viewModel) {
+        viewModel.state.map { it.playhead }.distinctUntilChanged()
+    }
+    val playhead by playheadFlow.collectAsStateWithLifecycle(initialValue = 0L)
+
+    TimelineView(
+        waveformGenerator = viewModel.waveformGenerator,
+        session = session,
+        selection = selection,
+        playhead = playhead,
+        isPlaying = isPlaying,
+        zoom = zoom,
+        splitMarkerPosition = splitMarkerPosition,
+        onClipSelected = { clipId ->
+            viewModel.handleIntent(
+                com.valoser.toshikari.videoeditor.domain.model.EditorIntent.SelectClip(
+                    com.valoser.toshikari.videoeditor.domain.model.Selection.VideoClip(clipId)
+                )
+            )
+        },
+        onClipTrimmed = { clipId, start, end ->
+            viewModel.handleIntent(
+                com.valoser.toshikari.videoeditor.domain.model.EditorIntent.TrimClip(
+                    clipId, start, end
+                )
+            )
+        },
+        onClipMoved = { clipId, position ->
+            viewModel.handleIntent(
+                com.valoser.toshikari.videoeditor.domain.model.EditorIntent.MoveClip(
+                    clipId, position
+                )
+            )
+        },
+        onAudioClipSelected = { trackId, clipId ->
+            viewModel.handleIntent(
+                com.valoser.toshikari.videoeditor.domain.model.EditorIntent.SelectClip(
+                    com.valoser.toshikari.videoeditor.domain.model.Selection.AudioClip(trackId, clipId)
+                )
+            )
+        },
+        onAudioClipTrimmed = { trackId, clipId, start, end ->
+            viewModel.handleIntent(
+                com.valoser.toshikari.videoeditor.domain.model.EditorIntent.TrimAudioClip(
+                    trackId, clipId, start, end
+                )
+            )
+        },
+        onAudioClipMoved = { trackId, clipId, position ->
+            viewModel.handleIntent(
+                com.valoser.toshikari.videoeditor.domain.model.EditorIntent.MoveAudioClip(
+                    trackId, clipId, position
+                )
+            )
+        },
+        onZoomChange = { newZoom ->
+            viewModel.handleIntent(
+                com.valoser.toshikari.videoeditor.domain.model.EditorIntent.SetZoom(newZoom)
+            )
+        },
+        onSeek = { target ->
+            viewModel.handleIntent(
+                com.valoser.toshikari.videoeditor.domain.model.EditorIntent.SeekTo(target)
+            )
+        },
+        onMarkerClick = { marker ->
+            viewModel.handleIntent(
+                com.valoser.toshikari.videoeditor.domain.model.EditorIntent.RemoveMarker(marker.time)
+            )
+        },
+        onKeyframeClick = { trackId, clipId, keyframe ->
+            viewModel.handleIntent(
+                com.valoser.toshikari.videoeditor.domain.model.EditorIntent.RemoveVolumeKeyframe(
+                    trackId,
+                    clipId,
+                    keyframe
+                )
+            )
+        },
+        mode = mode,
+        rangeSelection = rangeSelection,
+        onRangeChange = { start, end ->
+            viewModel.handleIntent(
+                com.valoser.toshikari.videoeditor.domain.model.EditorIntent.SetRangeSelection(start, end)
+            )
+        },
+        onTransitionClick = onTransitionClick,
+        modifier = modifier
+    )
 }

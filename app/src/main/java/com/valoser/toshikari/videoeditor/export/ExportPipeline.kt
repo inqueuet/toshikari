@@ -7,6 +7,7 @@ import android.util.Log
 import android.opengl.GLES30
 import android.opengl.EGL14
 import com.valoser.toshikari.videoeditor.domain.model.EditorSession
+import com.valoser.toshikari.videoeditor.domain.model.ExportOptions
 import com.valoser.toshikari.videoeditor.domain.model.ExportProgress
 import com.valoser.toshikari.videoeditor.domain.model.VideoClip
 import com.valoser.toshikari.videoeditor.domain.model.Keyframe
@@ -34,7 +35,7 @@ import kotlinx.coroutines.android.asCoroutineDispatcher
 // ExportSpec と定数は ExportSpecDetector.kt に移動済み
 
 interface ExportPipeline {
-    fun export(session: EditorSession, outputUri: Uri): Flow<ExportProgress>
+    fun export(session: EditorSession, outputUri: Uri, exportOptions: ExportOptions): Flow<ExportProgress>
     fun cleanup()
 }
 
@@ -52,10 +53,11 @@ class ExportPipelineImpl @Inject constructor(
 
     override fun export(
         session: EditorSession,
-        outputUri: Uri
+        outputUri: Uri,
+        exportOptions: ExportOptions
     ): Flow<ExportProgress> = flow {
         val totalDurationUs = session.videoClips.sumOf { it.duration } * 1000L
-        val exportSpec = ExportSpecDetector.detect(context, session)
+        val exportSpec = ExportSpecDetector.detect(context, session, exportOptions)
         val totalFrames = (totalDurationUs / 1_000_000f * exportSpec.frameRate).toInt()
         // ✅ エクスポート処理全体をIOディスパッチャで実行
         withContext(Dispatchers.IO) {

@@ -2,6 +2,7 @@ package com.valoser.toshikari.videoeditor.domain.usecase
 
 import android.net.Uri
 import com.valoser.toshikari.videoeditor.domain.model.EditorSession
+import com.valoser.toshikari.videoeditor.domain.model.ExportOptions
 import com.valoser.toshikari.videoeditor.domain.model.ExportProgress
 import kotlinx.coroutines.flow.Flow
 
@@ -11,6 +12,7 @@ import kotlinx.coroutines.flow.Flow
 interface ExportVideoUseCase {
     fun export(
         session: EditorSession,
-        outputUri: Uri
+        outputUri: Uri,
+        exportOptions: ExportOptions
     ): Flow<ExportProgress>
 }

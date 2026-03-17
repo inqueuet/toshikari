@@ -12,12 +12,15 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlin.math.roundToInt
 import com.valoser.toshikari.ui.theme.ToshikariTheme
 import com.valoser.toshikari.videoeditor.domain.model.EditorIntent
 import com.valoser.toshikari.videoeditor.presentation.ui.editor.EditorScreen
 import com.valoser.toshikari.videoeditor.presentation.viewmodel.EditorViewModel
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 
 /**
  * 動画編集アクティビティ
@@ -47,10 +50,26 @@ class EditorActivity : ComponentActivity() {
 
         setContent {
             ToshikariTheme(expressive = true) {
-                val state by viewModel.state.collectAsState()
+                val sessionFlow = remember(viewModel) {
+                    viewModel.state.map { it.session }.distinctUntilChanged()
+                }
+                val isLoadingFlow = remember(viewModel) {
+                    viewModel.state.map { it.isLoading }.distinctUntilChanged()
+                }
+                val exportProgressFlow = remember(viewModel) {
+                    viewModel.state.map { it.exportProgress }.distinctUntilChanged()
+                }
+                val errorFlow = remember(viewModel) {
+                    viewModel.state.map { it.error }.distinctUntilChanged()
+                }
+
+                val session by sessionFlow.collectAsStateWithLifecycle(initialValue = null)
+                val isLoading by isLoadingFlow.collectAsStateWithLifecycle(initialValue = false)
+                val exportProgress by exportProgressFlow.collectAsStateWithLifecycle(initialValue = null)
+                val error by errorFlow.collectAsStateWithLifecycle(initialValue = null)
 
                 when {
-                    state.session == null && !state.isLoading -> {
+                    session == null && !isLoading -> {
                         // セッションがない場合は動画選択画面
                         VideoSelectionScreen(
                             onSelectVideos = {
@@ -61,9 +80,9 @@ class EditorActivity : ComponentActivity() {
                             }
                         )
                     }
-                    state.isLoading -> {
+                    isLoading -> {
                         // ローディング画面
-                        LoadingScreen(progress = state.exportProgress)
+                        LoadingScreen(progress = exportProgress)
                     }
                     else -> {
                         // 編集画面
@@ -77,11 +96,11 @@ class EditorActivity : ComponentActivity() {
                 }
 
                 // エラー表示
-                state.error?.let { error ->
+                error?.let { message ->
                     LaunchedEffect(error) {
                         Toast.makeText(
                             this@EditorActivity,
-                            error,
+                            message,
                             Toast.LENGTH_SHORT
                         ).show()
                     }

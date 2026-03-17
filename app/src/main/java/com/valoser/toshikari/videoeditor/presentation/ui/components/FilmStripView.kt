@@ -39,7 +39,6 @@ import kotlin.math.roundToInt
 @Composable
 fun FilmStripView(
     clips: List<VideoClip>,
-    playhead: Long,
     zoom: Float,
     timelineDuration: Long,
     requestedStartMs: Long,

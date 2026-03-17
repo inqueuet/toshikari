@@ -531,7 +531,11 @@ class EditorViewModel @Inject constructor(
         _state.update { it.copy(isLoading = true, exportProgress = 0f) }
 
         try {
-            exportVideoUseCase.export(session, intent.outputUri)
+            android.util.Log.d(
+                "EditorViewModel",
+                "Export options: ${intent.exportOptions.width}x${intent.exportOptions.height}, videoBitrate=${intent.exportOptions.videoBitrate}, audioBitrate=${intent.exportOptions.audioBitrate}"
+            )
+            exportVideoUseCase.export(session, intent.outputUri, intent.exportOptions)
                 .collect { progress ->
                     android.util.Log.d("EditorViewModel", "Export progress: ${progress.percentage}%")
                     val percentage = progress.percentage.coerceIn(0f, 100f)

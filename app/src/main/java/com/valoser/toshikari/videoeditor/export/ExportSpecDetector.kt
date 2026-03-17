@@ -5,6 +5,7 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.util.Log
 import com.valoser.toshikari.videoeditor.domain.model.EditorSession
+import com.valoser.toshikari.videoeditor.domain.model.ExportOptions
 import com.valoser.toshikari.videoeditor.domain.model.VideoClip
 import com.valoser.toshikari.videoeditor.utils.findTrack
 
@@ -42,8 +43,20 @@ internal object ExportSpecDetector {
 
     private const val TAG = "ExportSpecDetector"
 
-    fun detect(context: Context, session: EditorSession): ExportSpec =
-        detect(context, session.videoClips)
+    fun detect(context: Context, session: EditorSession, exportOptions: ExportOptions? = null): ExportSpec {
+        val detected = detect(context, session.videoClips)
+        return exportOptions?.let { options ->
+            detected.copy(
+                width = options.width,
+                height = options.height,
+                frameRate = options.frameRate,
+                videoBitrate = options.videoBitrate,
+                audioBitrate = options.audioBitrate,
+                audioSampleRate = options.audioSampleRate,
+                audioChannels = options.audioChannels
+            )
+        } ?: detected
+    }
 
     fun detect(context: Context, clips: List<VideoClip>): ExportSpec {
         var detectedWidth: Int? = null
