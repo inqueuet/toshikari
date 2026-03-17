@@ -67,12 +67,11 @@ internal object DetailNgFilter {
             MatchType.EXACT -> target.equals(pattern, ignoreCase)
             MatchType.PREFIX -> target.startsWith(pattern, ignoreCase)
             MatchType.SUBSTRING -> target.contains(pattern, ignoreCase)
-            MatchType.REGEX -> runCatching {
-                Regex(
-                    pattern,
-                    if (ignoreCase) setOf(RegexOption.IGNORE_CASE) else emptySet()
-                ).containsMatchIn(target)
-            }.getOrElse { false }
+            MatchType.REGEX -> SafeRegex.containsMatchIn(
+                pattern = pattern,
+                target = target,
+                ignoreCase = ignoreCase,
+            )
         }
     }
 }

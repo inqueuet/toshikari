@@ -80,6 +80,7 @@ import com.valoser.toshikari.ImageItem
 import com.valoser.toshikari.MatchType
 import com.valoser.toshikari.NgRule
 import com.valoser.toshikari.RuleType
+import com.valoser.toshikari.SafeRegex
 import com.valoser.toshikari.ui.theme.LocalSpacing
 import com.valoser.toshikari.CatalogPrefetchHint
 import com.valoser.toshikari.ui.common.AppBarPosition
@@ -1194,6 +1195,6 @@ private fun matchTitle(title: String, rule: NgRule): Boolean {
         MatchType.EXACT -> title == pattern
         MatchType.PREFIX -> title.startsWith(pattern, ignoreCase = true)
         MatchType.SUBSTRING -> title.contains(pattern, ignoreCase = true)
-        MatchType.REGEX -> runCatching { Regex(pattern, setOf(RegexOption.IGNORE_CASE)).containsMatchIn(title) }.getOrDefault(false)
+        MatchType.REGEX -> SafeRegex.containsMatchIn(pattern = pattern, target = title, ignoreCase = true)
     }
 }

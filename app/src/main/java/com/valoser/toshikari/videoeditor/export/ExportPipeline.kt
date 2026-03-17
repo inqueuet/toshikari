@@ -31,23 +31,7 @@ import java.nio.ByteOrder
 import javax.inject.Inject
 import kotlinx.coroutines.android.asCoroutineDispatcher
 
-private data class ExportSpec(
-    val width: Int,
-    val height: Int,
-    val frameRate: Int,
-    val videoBitrate: Int,
-    val audioBitrate: Int,
-    val audioSampleRate: Int,
-    val audioChannels: Int
-)
-
-private const val DEFAULT_WIDTH = 1920
-private const val DEFAULT_HEIGHT = 1080
-private const val DEFAULT_FRAME_RATE = 30
-private const val DEFAULT_VIDEO_BITRATE = 10_000_000
-private const val DEFAULT_AUDIO_BITRATE = 192_000
-private const val DEFAULT_AUDIO_SAMPLE_RATE = 48_000
-private const val DEFAULT_AUDIO_CHANNELS = 2
+// ExportSpec と定数は ExportSpecDetector.kt に移動済み
 
 interface ExportPipeline {
     fun export(session: EditorSession, outputUri: Uri): Flow<ExportProgress>
@@ -71,7 +55,7 @@ class ExportPipelineImpl @Inject constructor(
         outputUri: Uri
     ): Flow<ExportProgress> = flow {
         val totalDurationUs = session.videoClips.sumOf { it.duration } * 1000L
-        val exportSpec = detectExportSpec(session)
+        val exportSpec = ExportSpecDetector.detect(context, session)
         val totalFrames = (totalDurationUs / 1_000_000f * exportSpec.frameRate).toInt()
         // ✅ エクスポート処理全体をIOディスパッチャで実行
         withContext(Dispatchers.IO) {
@@ -303,83 +287,6 @@ class ExportPipelineImpl @Inject constructor(
         }
     }
 
-    private fun detectExportSpec(session: EditorSession): ExportSpec {
-        var detectedWidth: Int? = null
-        var detectedHeight: Int? = null
-        var detectedFrameRate: Int? = null
-        var detectedVideoBitrate: Int? = null
-        var detectedAudioSampleRate: Int? = null
-        var detectedAudioChannels: Int? = null
-        var detectedAudioBitrate: Int? = null
-
-        session.videoClips.forEach { clip ->
-            val extractor = MediaExtractor()
-            try {
-                extractor.setDataSource(context, clip.source, null)
-                val videoTrackIndex = extractor.findTrack("video/")
-                if (videoTrackIndex != null) {
-                    val format = extractor.getTrackFormat(videoTrackIndex)
-                    var width = format.getInteger(MediaFormat.KEY_WIDTH)
-                    var height = format.getInteger(MediaFormat.KEY_HEIGHT)
-                    val rotation = if (format.containsKey(MediaFormat.KEY_ROTATION)) {
-                        format.getInteger(MediaFormat.KEY_ROTATION)
-                    } else {
-                        0
-                    }
-                    if (rotation == 90 || rotation == 270) {
-                        val tmp = width
-                        width = height
-                        height = tmp
-                    }
-                    if (detectedWidth == null || detectedHeight == null) {
-                        detectedWidth = width
-                        detectedHeight = height
-                        Log.d(TAG, "Detected source resolution: ${width}x${height}")
-                    }
-                    if (detectedFrameRate == null && format.containsKey(MediaFormat.KEY_FRAME_RATE)) {
-                        detectedFrameRate = format.getInteger(MediaFormat.KEY_FRAME_RATE)
-                        Log.d(TAG, "Detected source frameRate: $detectedFrameRate")
-                    }
-                    if (detectedVideoBitrate == null && format.containsKey(MediaFormat.KEY_BIT_RATE)) {
-                        detectedVideoBitrate = format.getInteger(MediaFormat.KEY_BIT_RATE)
-                        Log.d(TAG, "Detected source video bitrate: $detectedVideoBitrate")
-                    }
-                }
-
-                val audioTrackIndex = extractor.findTrack("audio/")
-                if (audioTrackIndex != null) {
-                    val audioFormat = extractor.getTrackFormat(audioTrackIndex)
-                    if (detectedAudioSampleRate == null && audioFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
-                        detectedAudioSampleRate = audioFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-                        Log.d(TAG, "Detected source audio sampleRate: $detectedAudioSampleRate")
-                    }
-                    if (detectedAudioChannels == null && audioFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
-                        detectedAudioChannels = audioFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-                        Log.d(TAG, "Detected source audio channels: $detectedAudioChannels")
-                    }
-                    if (detectedAudioBitrate == null && audioFormat.containsKey(MediaFormat.KEY_BIT_RATE)) {
-                        detectedAudioBitrate = audioFormat.getInteger(MediaFormat.KEY_BIT_RATE)
-                        Log.d(TAG, "Detected source audio bitrate: $detectedAudioBitrate")
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to parse source spec for ${clip.source}", e)
-            } finally {
-                extractor.release()
-            }
-        }
-
-        return ExportSpec(
-            width = detectedWidth ?: DEFAULT_WIDTH,
-            height = detectedHeight ?: DEFAULT_HEIGHT,
-            frameRate = detectedFrameRate ?: DEFAULT_FRAME_RATE,
-            videoBitrate = detectedVideoBitrate ?: DEFAULT_VIDEO_BITRATE,
-            audioBitrate = detectedAudioBitrate ?: DEFAULT_AUDIO_BITRATE,
-            audioSampleRate = detectedAudioSampleRate ?: DEFAULT_AUDIO_SAMPLE_RATE,
-            audioChannels = detectedAudioChannels ?: DEFAULT_AUDIO_CHANNELS
-        )
-    }
-
 }
 
 private class VideoProcessor(
@@ -595,8 +502,9 @@ private class VideoProcessor(
             Log.d(TAG, "processClip: Processed $framesInClip frames")
             onProgress(framesInClip)
         } finally {
-            decoder.stop(); decoder.release()
-            extractor.release()
+            try { decoder.stop() } catch (e: Throwable) { Log.w(TAG, "decoder.stop failed", e) }
+            try { decoder.release() } catch (e: Throwable) { Log.w(TAG, "decoder.release failed", e) }
+            try { extractor.release() } catch (e: Throwable) { Log.w(TAG, "extractor.release failed", e) }
         }
         return Result(durationUs = ((clip.duration / clip.speed) * 1000).toLong())
     }
@@ -1118,8 +1026,11 @@ private class AudioProcessor(
                                 queueToAudioEncoder(pcmForEncoder, reusableEncoderBufferInfo)
                                 drainAudioEncoder(false) // ← クリップ処理中は定期的にdrain(EOSなし)
                             } catch (e: Exception) {
-                                Log.e(TAG, "processClip: Audio encoding failed", e)
-                                throw e
+                                Log.e(TAG, "processClip: Audio encoding failed, falling back to video-only", e)
+                                failed = true
+                                // 音声エンコーディング失敗時は video-only にフォールバック
+                                pendingAudio.clear()
+                                muxerStartCallback()
                             }
                             // 出力サンプル数を加算(1ch換算)
                             clipOutSamples += outFrames.toLong()
@@ -1338,14 +1249,15 @@ private class AudioProcessor(
                                     trackIndex = muxer.addTrack(format)
                                     Log.d(TAG, "drainAudioEncoder: Audio track index=$trackIndex")
                                     muxerStartCallback() // 追加後に Muxer start を再評価
-                                } catch (e: IllegalStateException) {
-                                    // 端末/仮想デバイスでまれに "Muxer is not initialized" が発生するケースにフォールバック
+                                } catch (e: Exception) {
+                                    // Muxer 未初期化や IOException など、端末固有の例外すべてにフォールバック
                                     Log.w(
                                         TAG,
                                         "drainAudioEncoder: addTrack failed, fallback to video-only export",
                                         e
                                     )
                                     failed = true
+                                    pendingAudio.clear()
                                     // 以降の音声出力は破棄し、video-only で進める
                                 }
                             }

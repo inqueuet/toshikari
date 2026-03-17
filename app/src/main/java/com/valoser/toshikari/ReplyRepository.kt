@@ -8,7 +8,6 @@ import android.util.Log
 import android.webkit.MimeTypeMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
@@ -182,19 +181,10 @@ class ReplyRepository @Inject constructor(
             // -----------------------------
             // Cookie 結合（WebView + OkHttpJar）
             // -----------------------------
-            // CookieManager は Looper が必要なのでメインスレッドで実行（タイムアウト付き）
-            // 低スペック端末やバックグラウンド時を考慮して3秒に延長
-            val webViewCookie = withTimeoutOrNull(3000L) {
-                withContext(kotlinx.coroutines.Dispatchers.Main) {
-                    try {
-                        val cm = android.webkit.CookieManager.getInstance()
-                        cm.getCookie(threadPageUrl) ?: cm.getCookie(origin)
-                    } catch (e: Exception) {
-                        android.util.Log.w("ReplyRepository", "Failed to get WebView cookies", e)
-                        null
-                    }
-                }
-            }
+            val webViewCookie = WebViewCookieHelper.getCookieFirstOf(
+                threadPageUrl,
+                origin,
+            )
 
             val httpUrl = boardUrl.toHttpUrl()
             val jarCookies: List<Cookie> = runCatching {
