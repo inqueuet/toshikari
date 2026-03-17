@@ -1,7 +1,5 @@
 package com.valoser.toshikari
 
-import androidx.core.text.HtmlCompat
-
 internal object DetailPromptSanitizer {
     fun sanitizeContents(list: List<DetailContent>): List<DetailContent> {
         if (list.isEmpty()) return list
@@ -40,8 +38,27 @@ internal object DetailPromptSanitizer {
         if (trimmed.isEmpty()) return null
         if (!needsHtmlNormalization(trimmed)) return trimmed
 
-        val plain = HtmlCompat.fromHtml(trimmed, HtmlCompat.FROM_HTML_MODE_COMPACT).toString().trim()
+        val plain = stripHtmlAndDecodeEntities(trimmed).trim()
         return plain.ifBlank { null }
+    }
+
+    /** HTMLタグを除去しエンティティをデコードする（Android非依存） */
+    private fun stripHtmlAndDecodeEntities(html: String): String {
+        // 1) 名前付きエンティティをデコード（&amp; は最後）
+        val decoded = html
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&apos;", "'")
+            .replace(Regex("&#x([0-9A-Fa-f]+);")) { mr ->
+                mr.groupValues[1].toIntOrNull(16)?.toChar()?.toString() ?: mr.value
+            }
+            .replace(Regex("&#([0-9]+);")) { mr ->
+                mr.groupValues[1].toIntOrNull()?.toChar()?.toString() ?: mr.value
+            }
+            .replace("&amp;", "&")
+        // 2) タグを除去
+        return decoded.replace(Regex("<[^>]*>"), "")
     }
 
     private fun hasPromptNeedingSanitize(content: DetailContent): Boolean = when (content) {

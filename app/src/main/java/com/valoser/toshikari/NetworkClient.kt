@@ -28,80 +28,12 @@ class NetworkClient(
     private val httpClient: OkHttpClient,
 ) {
 
-    // ===== Cookie ユーティリティ =====
-    // "k=v; k2=v2" 形式のCookie文字列をMapへ分解
-    private fun parseCookieString(s: String?): Map<String, String> {
-        if (s.isNullOrBlank()) return emptyMap()
+    // ===== Cookie ユーティリティ（委譲） =====
+    private fun parseCookieString(s: String?): Map<String, String> =
+        NetworkClientCookieSupport.parseCookieString(s)
 
-        return s.split(";").mapNotNull { segment ->
-            val trimmed = segment.trim()
-            if (trimmed.isEmpty()) return@mapNotNull null
-
-            val i = trimmed.indexOf('=')
-            when {
-                // '='がない (i == -1)、または先頭にある (i == 0) 場合は無効なCookieとして無視
-                i <= 0 -> {
-                    Log.w("NetworkClient", "Invalid cookie format (i=$i): $trimmed")
-                    null
-                }
-                else -> {
-                    // 通常のkey=value形式
-                    val key = trimmed.substring(0, i).trim()
-                    val value = if (i + 1 < trimmed.length) {
-                        trimmed.substring(i + 1).trim()
-                    } else {
-                        "" // '='の後に何もない場合は空文字列
-                    }
-
-                    // キーの妥当性チェック（RFC 6265準拠）
-                    when {
-                        key.isEmpty() -> {
-                            Log.w("NetworkClient", "Invalid cookie: empty key")
-                            null
-                        }
-                        key.any { it.isWhitespace() || it in setOf(';', ',', '=', '"', '\\') } -> {
-                            Log.w("NetworkClient", "Invalid cookie key (contains illegal characters): $key")
-                            null
-                        }
-                        else -> key to value
-                    }
-                }
-            }
-        }.toMap()
-    }
-
-    // 複数ソースのCookie文字列を安全にマージ
-    private fun mergeCookies(vararg cookieStrs: String?): String? {
-        // セキュリティクリティカルなCookieキー（認証系）
-        val criticalKeys = setOf("session", "sessionid", "auth", "token", "csrf", "xsrf", "jwt")
-
-        val merged = mutableMapOf<String, String>()
-        val criticalCookies = mutableMapOf<String, String>()
-
-        // 各Cookie文字列を処理（左から右へ、後勝ち）
-        cookieStrs.forEach { cookieStr ->
-            val parsed = parseCookieString(cookieStr)
-            parsed.forEach { (key, value) ->
-                val normalizedKey = key.lowercase()
-                if (criticalKeys.any { normalizedKey.contains(it) }) {
-                    // クリティカルなCookieは別途管理
-                    criticalCookies[key] = value
-                } else {
-                    // 通常のCookieは単純に後勝ち
-                    merged[key] = value
-                }
-            }
-        }
-
-        // クリティカルなCookieを最後に追加（優先度を保証）
-        merged.putAll(criticalCookies)
-
-        return if (merged.isEmpty()) {
-            null
-        } else {
-            merged.entries.joinToString("; ") { "${it.key}=${it.value}" }
-        }
-    }
+    private fun mergeCookies(vararg cookieStrs: String?): String? =
+        NetworkClientCookieSupport.mergeCookies(*cookieStrs)
 
     /**
      * 任意 URL の内容をストリーミングで `output` へコピーする。

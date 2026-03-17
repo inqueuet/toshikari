@@ -581,59 +581,16 @@ class DetailActivity : BaseActivity() {
     }
 
     // 「No.xxx」「ファイル名」「本文一部」いずれかで対象を検索
-    /**
-     * クエリ文字列に基づき対象コンテンツを検索する。
-     * サポート:
-     * 1) 本文中の "No.<番号>" マッチ
-     * 2) 画像/動画のファイル名またはURL末尾の一致
-     * 3) 本文プレーンテキストの部分一致（大文字小文字無視）
-     */
-    private fun findContentByText(all: List<DetailContent>, searchText: String): DetailContent? {
-        // 1) No.\d+
-        Regex("""No\.(\d+)""").find(searchText)?.groupValues?.getOrNull(1)?.let { num ->
-            val hit = all.firstOrNull {
-            it is DetailContent.Text && (viewModel.plainTextOf(it).contains("No.$num"))
-            }
-            if (hit != null) return hit
-        }
-
-        // 2) 画像/動画 ファイル名末尾一致
-        for (c in all) {
-            when (c) {
-                is DetailContent.Image -> if (c.fileName == searchText || c.imageUrl.endsWith(searchText)) return c
-                is DetailContent.Video -> if (c.fileName == searchText || c.videoUrl.endsWith(searchText)) return c
-                else -> {}
-            }
-        }
-
-        // 3) 本文 部分一致（空白圧縮・大文字小文字無視）
-        val needle = searchText.trim().replace(Regex("\\s+"), " ")
-        return all.firstOrNull {
-            it is DetailContent.Text && (viewModel.plainTextOf(it)
-                .trim()
-                .replace(Regex("\\s+"), " ")
-                .contains(needle, ignoreCase = true))
-        }
-    }
+    private fun findContentByText(all: List<DetailContent>, searchText: String): DetailContent? =
+        DetailQuoteSupport.findContentByText(all, searchText) { viewModel.plainTextOf(it) }
 
     // 行頭が '>' 1個の引用行（最初の1つ）を返す（旧：単一版）
-    /** 行頭が '>' 1個の引用行（最初の1つ）を抽出する。 */
-    private fun extractFirstLevelQuoteCore(item: DetailContent.Text): String? {
-        val plain = viewModel.plainTextOf(item)
-        val m = Regex("^>([^>].+)$", RegexOption.MULTILINE).find(plain)
-        return m?.groupValues?.getOrNull(1)?.trim()
-    }
+    private fun extractFirstLevelQuoteCore(item: DetailContent.Text): String? =
+        DetailQuoteSupport.extractFirstLevelQuote(viewModel.plainTextOf(item))
 
     // 行頭が '>' 1個の引用行を「複数」返す（多段で複数候補がある場合に使用）
-    /** 行頭が '>' 1個の引用行（複数）をすべて抽出する。 */
-    private fun extractFirstLevelQuoteCores(item: DetailContent.Text): List<String> {
-        val plain = viewModel.plainTextOf(item)
-        return Regex("^>([^>].+)$", RegexOption.MULTILINE)
-            .findAll(plain)
-            .map { it.groupValues[1].trim() }
-            .filter { it.isNotBlank() }
-            .toList()
-    }
+    private fun extractFirstLevelQuoteCores(item: DetailContent.Text): List<String> =
+        DetailQuoteSupport.extractAllFirstLevelQuotes(viewModel.plainTextOf(item))
 
     private fun showToastOnUiThread(message: String, duration: Int) {
         lifecycleScope.launch(Dispatchers.Main) {

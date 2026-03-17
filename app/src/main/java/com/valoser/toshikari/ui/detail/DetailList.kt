@@ -120,21 +120,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.collection.LruCache
 import java.text.Normalizer
 
-/**
- * Compose の LazyColumn で利用する安定キー。
- * DetailContent の各要素は ViewModel/Worker 層で衝突しない ID を付与しているため、
- * 原則としてそのまま利用する。空文字の場合のみ型＋indexでフォールバック。
- */
-private fun stableKey(item: DetailContent, index: Int): String {
-    val id = item.id
-    if (id.isNotBlank()) return id
-    return when (item) {
-        is DetailContent.Text -> "text_fallback_$index"
-        is DetailContent.Image -> "image_fallback_$index"
-        is DetailContent.Video -> "video_fallback_$index"
-        is DetailContent.ThreadEndTime -> "thread_end_fallback_$index"
-    }
-}
 
 /**
  * スレ詳細のコンテンツを表示する Compose リスト。
@@ -154,53 +139,8 @@ private fun stableKey(item: DetailContent, index: Int): String {
  * - `onVisibleMaxOrdinal`: 画面内で50%以上見えている本文の最大序数を通知。
  */
 
-private val imageRequestCache = LruCache<String, ImageRequest>(2000)
-private val headersCache = LruCache<String, NetworkHeaders>(100)
-
 private data class ScrollSnapshot(val index: Int, val offset: Int, val anchorId: String?)
 private data class RestoreSignature(val anchorId: String, val key: Triple<Int, Int, Int>)
-
-private fun createImageRequest(
-    context: android.content.Context,
-    url: String,
-    referer: String?,
-    forDisplay: Boolean = true
-): ImageRequest {
-    val cacheKey = "$url|$referer|$forDisplay"
-    return imageRequestCache.get(cacheKey) ?: run {
-        val request = ImageRequest.Builder(context)
-            .data(url)
-            .memoryCacheKey(ImageKeys.full(url))
-            .diskCacheKey(url)
-            .memoryCachePolicy(CachePolicy.ENABLED)
-            .diskCachePolicy(CachePolicy.ENABLED)
-            .networkCachePolicy(CachePolicy.ENABLED)
-            .precision(Precision.INEXACT)
-            .transitionFactory(CrossfadeTransition.Factory())
-            .apply {
-                if (!referer.isNullOrBlank()) {
-                    httpHeaders(createHeaders(referer))
-                }
-                // サイズ指定を削除してキャッシュ効率を優先
-                // Coilが自動的に適切なサイズでスケーリングを行う
-            }
-            .build()
-        imageRequestCache.put(cacheKey, request)
-        request
-    }
-}
-
-private fun createHeaders(referer: String): NetworkHeaders {
-    return headersCache.get(referer) ?: run {
-        val headers = NetworkHeaders.Builder()
-            .add("Referer", referer)
-            .add("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
-            .add("Accept-Language", "ja,en-US;q=0.9,en;q=0.8")
-            .build()
-        headersCache.put(referer, headers)
-        headers
-    }
-}
 
 
 @Composable
@@ -373,7 +313,7 @@ fun DetailListCompose(
                     for (i in startAhead..endAhead) {
                         val url = urlFor(i) ?: continue
                         if (prefetched.add(url)) {
-                            val req = createImageRequest(ctx, url, threadUrl, forDisplay = false)
+                            val req = DetailListSupport.createImageRequest(ctx, url, threadUrl, forDisplay = false)
                             imageLoader.enqueue(req)
                         }
                     }
@@ -383,7 +323,7 @@ fun DetailListCompose(
                         for (i in startBack..endBack) {
                             val url = urlFor(i) ?: continue
                             if (prefetched.add(url)) {
-                                val req = createImageRequest(ctx, url, threadUrl, forDisplay = false)
+                                val req = DetailListSupport.createImageRequest(ctx, url, threadUrl, forDisplay = false)
                                 imageLoader.enqueue(req)
                             }
                         }
@@ -456,14 +396,14 @@ fun DetailListCompose(
                     val visibleHeight = (visibleBottom - visibleTop).coerceAtLeast(0)
                     val ratio = if (vi.size > 0) visibleHeight.toFloat() / vi.size.toFloat() else 0f
                     if (ratio >= 0.5f) {
-                        val ordinal = ordinalForIndex(filteredItems, vi.index)
+                        val ordinal = DetailListSupport.ordinalForIndex(filteredItems, vi.index)
                         if (ordinal > maxOrdinal) maxOrdinal = ordinal
                     }
                 }
                 // 補正：最終要素がほぼ見えていれば末尾まで既読にしやすく
                 if (visible.isNotEmpty()) {
                     val lastIdx = filteredItems.lastIndex
-                    val lastOrdinal = ordinalForIndex(filteredItems, lastIdx)
+                    val lastOrdinal = DetailListSupport.ordinalForIndex(filteredItems, lastIdx)
                     val lastVi = visible.last()
                     if (lastVi.index >= lastIdx - 1 && lastOrdinal > maxOrdinal) maxOrdinal = lastOrdinal
                 }
@@ -532,7 +472,7 @@ fun DetailListCompose(
     }
 
     LazyColumn(state = internalState, modifier = modifier.fillMaxWidth(), contentPadding = contentPadding) {
-        itemsIndexed(filteredItems, key = { index, it -> stableKey(it, index) }) { index, item ->
+        itemsIndexed(filteredItems, key = { index, it -> DetailListSupport.stableKey(it, index) }) { index, item ->
             when (item) {
                 is DetailContent.Text -> {
                     val plainState = produceState<String?>(
@@ -555,7 +495,7 @@ fun DetailListCompose(
                     // 表示用にトークン周りの空白を補正し、そうだねの楽観カウントを適用
                     val displayText = remember(plain, sodaneCounts.toList()) {
                         // 楽観表示の適用時、行内で No が見つからない場合は自投稿の No をフォールバック
-                        applySodaneDisplay(padTokensForSpacingCached(plain), sodaneCounts, selfResNum)
+                        DetailListSupport.applySodaneDisplay(DetailListSupport.padTokensForSpacingCached(plain), sodaneCounts, selfResNum)
                     }
                     // クリック可能領域（No./引用/ID/URL/ファイル名/そうだね/検索ハイライト）を付与
                     val annotated = remember(displayText, searchQuery, threadTitle, myPostNumbers) { buildAnnotatedFromText(displayText, searchQuery, threadTitle, myPostNumbers) }
@@ -577,7 +517,7 @@ fun DetailListCompose(
                             .pointerInput(plain) {
                                 detectTapGestures(
                                     onLongPress = {
-                                        val bodyOnly = extractBodyOnlyPlain(plain)
+                                        val bodyOnly = DetailListSupport.extractBodyOnlyPlain(plain)
                                         val source = if (bodyOnly.isNotBlank()) bodyOnly else plain
                                         val quoted = source.lines().joinToString("\n") { ">" + it }
                                         onBodyClick?.invoke(quoted)
@@ -683,7 +623,7 @@ fun DetailListCompose(
                             }
                         } else {
                             coil3.compose.SubcomposeAsyncImage(
-                                model = createImageRequest(ctx, displayUrl, threadUrl, forDisplay = true),
+                                model = DetailListSupport.createImageRequest(ctx, displayUrl, threadUrl, forDisplay = true),
                                 contentDescription = null,
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -773,7 +713,7 @@ fun DetailListCompose(
                     val previewUrl = item.thumbnailUrl ?: item.videoUrl
                     Column(modifier = Modifier.fillMaxWidth()) {
                         coil3.compose.SubcomposeAsyncImage(
-                            model = createImageRequest(ctx, previewUrl, threadUrl, forDisplay = true),
+                            model = DetailListSupport.createImageRequest(ctx, previewUrl, threadUrl, forDisplay = true),
                             contentDescription = null,
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -870,7 +810,7 @@ fun DetailListCompose(
             }
 
             // Divider: ブロック末尾でのみ描画（次要素がText/EndTime or 末尾）
-            if (isEndOfBlock(filteredItems, index)) {
+            if (DetailListSupport.isEndOfBlock(filteredItems, index)) {
                 // 視認性のための余白を上下に付与し、コンテンツと線が密着しないようにする
                 // ダークモードでも見やすいよう太くalpha値を高めに設定
                 androidx.compose.material3.HorizontalDivider(
@@ -884,222 +824,60 @@ fun DetailListCompose(
 
     // No. タップメニュー（返信 / 確認 / 削除）
     resNumForDialog?.let { resDialog ->
-        AlertDialog(
-            onDismissRequest = { resNumForDialog = null },
-            title = { androidx.compose.material3.Text("No.$resDialog") },
-            text = { androidx.compose.material3.Text("操作を選択してください") },
-            confirmButton = {
-                androidx.compose.foundation.layout.Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    TextButton(onClick = {
-                        onResNumClick?.invoke(resDialog, ">No.$resDialog")
-                        resNumForDialog = null
-                    }) { androidx.compose.material3.Text("返信") }
-                    TextButton(onClick = {
-                        onResNumConfirmClick?.invoke(resDialog)
-                        resNumForDialog = null
-                    }) { androidx.compose.material3.Text("確認") }
-                    onResNumDelClick?.let { handleDelete ->
-                        TextButton(onClick = {
-                            handleDelete(resDialog)
-                            resNumForDialog = null
-                        }) { androidx.compose.material3.Text("削除") }
-                    }
-                }
-            }
+        ResNumDialog(
+            resNum = resDialog,
+            onReply = { num, body -> onResNumClick?.invoke(num, body) },
+            onConfirm = { num -> onResNumConfirmClick?.invoke(num) },
+            onDelete = onResNumDelClick,
+            onDismiss = { resNumForDialog = null },
         )
     }
 
     // ファイル名タップメニュー（返信 / 確認）
     fileNameForDialog?.let { fn ->
-        AlertDialog(
-            onDismissRequest = { fileNameForDialog = null },
-            title = { androidx.compose.material3.Text(fn) },
-            text = { androidx.compose.material3.Text("操作を選択してください") },
-            confirmButton = {
-                androidx.compose.foundation.layout.Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    TextButton(onClick = {
-                        onBodyClick?.invoke(">" + fn)
-                        fileNameForDialog = null
-                    }) { androidx.compose.material3.Text("返信") }
-                    TextButton(onClick = {
-                        onFileNameClick?.invoke(fn)
-                        fileNameForDialog = null
-                    }) { androidx.compose.material3.Text("確認") }
-                }
-            }
+        FileNameDialog(
+            fileName = fn,
+            onReply = { text -> onBodyClick?.invoke(text) },
+            onConfirm = { name -> onFileNameClick?.invoke(name) },
+            onDismiss = { fileNameForDialog = null },
         )
     }
 
     // 引用タップメニュー（返信 / 確認）
     quoteForDialog?.let { qt ->
-        AlertDialog(
-            onDismissRequest = { quoteForDialog = null },
-            title = { androidx.compose.material3.Text("引用") },
-            text = { androidx.compose.material3.Text("操作を選択してください") },
-            confirmButton = {
-                androidx.compose.foundation.layout.Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    TextButton(onClick = {
-                        val replyText = ">" + qt
-                        onBodyClick?.invoke(replyText)
-                        quoteForDialog = null
-                    }) { androidx.compose.material3.Text("返信") }
-                    TextButton(onClick = {
-                        onQuoteClick?.invoke(qt)
-                        quoteForDialog = null
-                    }) { androidx.compose.material3.Text("確認") }
-                }
-            }
+        QuoteDialog(
+            quote = qt,
+            onReply = { text -> onBodyClick?.invoke(text) },
+            onConfirm = { q -> onQuoteClick?.invoke(q) },
+            onDismiss = { quoteForDialog = null },
         )
     }
 
     // 本文タップメニュー（返信 / 確認 / NG / 選択して引用）
     bodyForDialog?.let { src ->
-        val plainState = produceState<String?>(
-            initialValue = plainTextCache[src.id],
-            key1 = src.id,
-            key2 = plainTextCache[src.id]
-        ) {
-            val cached = plainTextCache[src.id]
-            if (cached != null) {
-                value = cached
-            } else {
-                value = withContext(kotlinx.coroutines.Dispatchers.Default) { plainTextOf(src) }
-            }
-        }
-        val plain = plainState.value.orEmpty()
-        val bodyOnly = extractBodyOnlyPlain(plain)
-        val source = if (bodyOnly.isNotBlank()) bodyOnly else plain
-        val quoted = source.lines().joinToString("\n") { ">" + it }
-        val lines = source.lines().filter { it.isNotBlank() }
-        AlertDialog(
-            onDismissRequest = { bodyForDialog = null },
-            title = { androidx.compose.material3.Text("本文") },
-            text = { androidx.compose.material3.Text("操作を選択してください") },
-            confirmButton = {
-                androidx.compose.foundation.layout.Column(
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    androidx.compose.foundation.layout.Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.Center
-                    ) {
-                        TextButton(onClick = {
-                            onBodyClick?.invoke(quoted)
-                            bodyForDialog = null
-                        }) { androidx.compose.material3.Text("返信") }
-                        TextButton(onClick = {
-                            lineSelectionDialog = lines
-                            bodyForDialog = null
-                        }) { androidx.compose.material3.Text("選択") }
-                    }
-                    androidx.compose.foundation.layout.Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.Center
-                    ) {
-                        TextButton(onClick = {
-                            onBodyShowBackRefs?.invoke(src)
-                            bodyForDialog = null
-                        }) { androidx.compose.material3.Text("確認") }
-                        TextButton(onClick = {
-                            onAddNgFromBody?.invoke(plain)
-                            bodyForDialog = null
-                        }) { androidx.compose.material3.Text("NG") }
-                    }
-                }
-            }
-                )
+        BodyDialog(
+            src = src,
+            plainTextCache = plainTextCache,
+            plainTextOf = plainTextOf,
+            onReply = { text -> onBodyClick?.invoke(text) },
+            onShowBackRefs = { item -> onBodyShowBackRefs?.invoke(item) },
+            onAddNg = { text -> onAddNgFromBody?.invoke(text) },
+            onSelectLines = { lines -> lineSelectionDialog = lines },
+            onDismiss = { bodyForDialog = null },
+        )
     }
 
     // 行選択ダイアログ
     lineSelectionDialog?.let { lines ->
-        val selectedLines = remember { mutableStateMapOf<Int, Boolean>().apply {
-            lines.indices.forEach { this[it] = true }
-        } }
-        AlertDialog(
-            onDismissRequest = { lineSelectionDialog = null },
-            title = { androidx.compose.material3.Text("引用する行を選択") },
-            text = {
-                LazyColumn(
-                    modifier = Modifier.heightIn(max = 400.dp)
-                ) {
-                    items(lines.size) { index ->
-                        val line = lines[index]
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { selectedLines[index] = !(selectedLines[index] ?: true) }
-                                .padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            androidx.compose.material3.Checkbox(
-                                checked = selectedLines[index] ?: true,
-                                onCheckedChange = { selectedLines[index] = it }
-                            )
-                            androidx.compose.material3.Text(
-                                text = line,
-                                style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
-                                maxLines = 2,
-                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                                modifier = Modifier.padding(start = 8.dp)
-                            )
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    val selected = lines.filterIndexed { index, _ -> selectedLines[index] == true }
-                    val quoted = selected.joinToString("\n") { ">" + it }
-                    onBodyClick?.invoke(quoted)
-                    lineSelectionDialog = null
-                }) {
-                    androidx.compose.material3.Text("引用")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { lineSelectionDialog = null }) {
-                    androidx.compose.material3.Text("キャンセル")
-                }
-            }
+        LineSelectionDialog(
+            lines = lines,
+            onConfirm = { quoted -> onBodyClick?.invoke(quoted) },
+            onDismiss = { lineSelectionDialog = null },
         )
     }
 
 }
 
-/**
- * 指定インデックスまでに現れた本文（Text）要素の個数を返す。
- * これが投稿の序数（1-based の表示順）に相当する。
- */
-private fun ordinalForIndex(all: List<DetailContent>, index: Int): Int {
-    var ord = 0
-    var i = 0
-    while (i <= index && i < all.size) {
-        if (all[i] is DetailContent.Text) ord++
-        i++
-    }
-    return ord
-}
-
-/**
- * ヘッダ風の行（No./ID 行など）を除いた「本文のみ」のプレーンテキストを抽出する。
- * - 先頭から以下をスキップして本文開始位置を決定: ID 行／No 行／日付時刻を含む行／
- *   ファイル情報行（ファイル名/画像/拡張子付きの情報行）／空行。
- * - 引用行(>)も本文に含める（選択肢に表示するため）。
- * - 画像・動画のサイズ表示行（[123456 B]や xxx.jpg-(123456 B) など）を除外。
- * - 決定した行から末尾までを本文として返す（末尾の空行は削除）。
- */
-private fun extractBodyOnlyPlain(plain: String): String {
-    return DetailBodyTextExtractor.extract(plain)
-}
 
 /**
  * 本文テキストから AnnotatedString を構築。
@@ -1182,43 +960,3 @@ private fun buildAnnotatedFromText(text: String, highlight: String?, threadTitle
     }
 }
 
-// 文字列処理結果をキャッシュ
-private val stringProcessingCache = LruCache<String, String>(100)
-
-/**
- * プレーンテキスト上で詰まりやすいトークン（ID／No／+／そうだね）の間に空白を補正し、
- * ヘッダー行かつ非引用行で No. を含む場合に行末へ そうだね トークンが無ければ付与する。
- */
-private fun padTokensForSpacingCached(src: String): String {
-    return stringProcessingCache.get(src) ?: run {
-        val result = DetailSodaneTextFormatter.padTokensForSpacing(src)
-        stringProcessingCache.put(src, result)
-        result
-    }
-}
-
-/**
- * 「そうだね」の楽観表示を適用してテキストを上書きする。
- * - そうだねトークン（+／＋／そうだね／そうだねxN）を「そうだねxN」に置換。
- * - 行内から No を抽出できない場合は selfResNum をフォールバックとして使用。
- * - ヘッダー行のみに適用する。
- */
-private fun applySodaneDisplay(text: String, overrides: Map<String, Int>, selfResNum: String?): String {
-    return DetailSodaneTextFormatter.applySodaneDisplay(text, overrides, selfResNum)
-}
-
-/**
- * Text + (Image|Video)* のブロックの区切りかを判定する。
- * 次要素が Text/ThreadEndTime/末尾 の場合に区切りとみなし、末尾(null)では線を描かない。
- */
-private fun isEndOfBlock(items: List<DetailContent>, index: Int): Boolean {
-    if (index !in items.indices) return false
-    val next = items.getOrNull(index + 1)
-    // ブロック構造: Text + (Image|Video)* の塊。次がText/EndTime/なし なら区切り。
-    // 末尾(null)では線を描かないように変更（最終行の下に線は不要）
-    return when (next) {
-        null -> false
-        is DetailContent.Text, is DetailContent.ThreadEndTime -> true
-        is DetailContent.Image, is DetailContent.Video -> false
-    }
-}

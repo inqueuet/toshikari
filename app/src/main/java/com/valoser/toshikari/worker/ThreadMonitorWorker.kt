@@ -27,6 +27,7 @@ import com.valoser.toshikari.NetworkClient
 import com.valoser.toshikari.UrlNormalizer
 import com.valoser.toshikari.DetailPromptMerger
 import com.valoser.toshikari.DetailHtmlParsingSupport
+import com.valoser.toshikari.StringHashSupport
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import org.jsoup.nodes.Document
@@ -37,8 +38,6 @@ import java.net.URL
 import com.valoser.toshikari.DetailContent
 import com.valoser.toshikari.cache.DetailCacheManager
 import java.io.File
-import kotlin.math.max
-import kotlin.math.roundToInt
 
 private const val PREF_KEY_BACKGROUND_MEDIA_ARCHIVE = "pref_key_background_media_archive"
 
@@ -370,9 +369,7 @@ class ThreadMonitorWorker @AssistedInject constructor(
     private suspend fun archiveMedia(threadUrl: String, list: List<DetailContent>): List<DetailContent> {
         val dir = cacheManager.getArchiveDirForUrl(threadUrl)
         fun fileFor(url: String): File {
-            val ext = url.substringAfterLast('.', "")
-            val name = url.sha256() + if (ext.isNotBlank()) ".${ext.lowercase()}" else ""
-            return File(dir, name)
+            return File(dir, StringHashSupport.buildMediaFileName(url))
         }
         suspend fun ensureDownloaded(remoteUrl: String): File? {
             val f = fileFor(remoteUrl)
@@ -418,10 +415,7 @@ class ThreadMonitorWorker @AssistedInject constructor(
             try {
                 retriever.setDataSource(videoFile.absolutePath)
                 val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
-                val frameTimeUs = when {
-                    durationMs == null || durationMs <= 0L -> 1_000_000L
-                    else -> (durationMs * 1000L / 2).coerceAtLeast(1_000_000L)
-                }
+                val frameTimeUs = StringHashSupport.calculateFrameTimeUs(durationMs)
                 val videoWidth = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
                 val videoHeight = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
 
@@ -500,21 +494,8 @@ class ThreadMonitorWorker @AssistedInject constructor(
         }
     }
 
-    private fun scaleDimensions(width: Int, height: Int, maxDimension: Int): Pair<Int, Int> {
-        if (width <= 0 || height <= 0) return 0 to 0
-        val longest = max(width, height)
-        if (longest <= maxDimension) return width to height
-        val scale = maxDimension.toDouble() / longest.toDouble()
-        val scaledW = (width * scale).roundToInt().coerceAtLeast(1)
-        val scaledH = (height * scale).roundToInt().coerceAtLeast(1)
-        return scaledW to scaledH
-    }
+    private fun scaleDimensions(width: Int, height: Int, maxDimension: Int): Pair<Int, Int> =
+        StringHashSupport.scaleDimensions(width, height, maxDimension)
 
-    /** 文字列のSHA-256（16進表現）。アーカイブのファイル名に使用。 */
-    private fun String.sha256(): String {
-        return java.security.MessageDigest
-            .getInstance("SHA-256")
-            .digest(toByteArray())
-            .fold("") { str, it -> str + "%02x".format(it) }
-    }
+    private fun String.sha256(): String = StringHashSupport.sha256(this)
 }

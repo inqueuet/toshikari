@@ -1,19 +1,19 @@
 package com.valoser.toshikari.ui.detail
 
 internal data class DetailSodaneTokenMatch(
-    val start: Int,
-    val end: Int
-)
+    override val start: Int,
+    override val end: Int
+) : DetailTokenMatch
 
 /**
  * ヘッダー行内の「そうだね」トークン位置を抽出する補助。
  */
-internal object DetailSodaneTokenFinder {
+internal object DetailSodaneTokenFinder : DetailTokenFinder<DetailSodaneTokenMatch> {
     private val sodaneTokenPattern = Regex("""(?:そうだねx\d+|そうだね|[+＋])""")
     private val noPattern = Regex("""(?i)No[.\uFF0E]?\s*(\n?\s*)?(\d+)""")
     private val idPattern = Regex("""ID[:：]""")
 
-    fun findMatches(text: String): List<DetailSodaneTokenMatch> {
+    override fun findMatches(text: String): List<DetailSodaneTokenMatch> {
         val matches = mutableListOf<DetailSodaneTokenMatch>()
         var start = 0
         var lineIndex = 0

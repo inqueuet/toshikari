@@ -114,12 +114,15 @@ class DetailViewModel @Inject constructor(
         .map { state -> state.uiState.isLoading }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
-    /** ダウンロード進捗を表すフロー。 */
-    private val _downloadProgress = MutableStateFlow<DownloadProgress?>(null)
-    val downloadProgress: StateFlow<DownloadProgress?> = _downloadProgress.asStateFlow()
-
-    private val _downloadConflictRequests = MutableSharedFlow<DownloadConflictRequest>(extraBufferCapacity = 1)
-    val downloadConflictRequests = _downloadConflictRequests.asSharedFlow()
+    // ===== ダウンロードDelegateへの委譲 =====
+    private val downloadDelegate = DetailDownloadDelegate(
+        appContext = appContext,
+        networkClient = networkClient,
+        scope = viewModelScope,
+        currentUrlProvider = { currentUrl },
+    )
+    val downloadProgress: StateFlow<DownloadProgress?> = downloadDelegate.downloadProgress
+    val downloadConflictRequests = downloadDelegate.downloadConflictRequests
 
     private val _promptLoadingIds = MutableStateFlow<Set<String>>(emptySet())
     val promptLoadingIds: StateFlow<Set<String>> = _promptLoadingIds.asStateFlow()
@@ -131,16 +134,8 @@ class DetailViewModel @Inject constructor(
     /** スレッドアーカイバー */
     private val threadArchiver by lazy { ThreadArchiver(appContext, networkClient) }
 
-    /** ダウンロード/アーカイブのキャンセル用Job */
-    private var downloadJob: kotlinx.coroutines.Job? = null
+    /** アーカイブのキャンセル用Job */
     private var archiveJob: kotlinx.coroutines.Job? = null
-
-    private val downloadRequestIdGenerator = AtomicLong(0)
-    private val pendingDownloadMutex = Mutex()
-    private val pendingDownloadRequests = mutableMapOf<Long, DetailPendingDownloadRequest<MediaSaver.ExistingMedia>>()
-
-    // ダウンロード進捗の更新専用ロック（ViewModelインスタンス全体のロックを避ける）
-    private val downloadProgressMutex = Mutex()
 
     // そうだねの更新通知用（resNum -> サーバ応答カウント）。UI側ではこれを受け取り表示を楽観上書き。
     private val _sodaneUpdate = MutableSharedFlow<Pair<String, Int>>(extraBufferCapacity = 1)
@@ -169,15 +164,13 @@ class DetailViewModel @Inject constructor(
     }
     private val ngStore by lazy { NgStore(appContext) }
 
-    // NGフィルタ結果のキャッシュ（動的サイズ調整）
-    private val ngFilterCache = LruCache<Pair<List<DetailContent>, List<NgRule>>, List<DetailContent>>(
-        calculateOptimalCacheSize()
-    )
-
-    // 適応的メモリ監視
-    private var lastMemoryCheck = 0L
-    private var memoryCheckIntervalMs = 30000L // 初期値30秒、使用率に応じて調整
-    private var consecutiveHighMemoryCount = 0
+    // ===== メモリ管理Delegateへの委譲 =====
+    private val memoryManager by lazy {
+        DetailMemoryManager(
+            appContext = appContext,
+            plainTextCacheRef = _plainTextCache,
+        )
+    }
 
     // データ整合性管理用のアトミックカウンタ
     private val contentUpdateCounter = AtomicLong(0)
@@ -194,126 +187,9 @@ class DetailViewModel @Inject constructor(
         }
     }
 
-    /** デバイスメモリに基づいた最適なキャッシュサイズを計算 */
-    private fun calculateOptimalCacheSize(): Int {
-        val runtime = Runtime.getRuntime()
-        val maxMemory = runtime.maxMemory()
-        // 最大メモリの1%をキャッシュに割り当て、最小20、最大200
-        return ((maxMemory / 1024 / 1024 / 100).toInt()).coerceIn(20, 200)
-    }
-
-    /** NGフィルタ結果キャッシュをクリアする（NGルール変更やメモリ圧などのトリガーで使用）。 */
-    private fun clearNgFilterCache() {
-        ngFilterCache.evictAll()
-    }
-
-    /**
-     * 適応的メモリ使用量監視の改善
-     * - メモリ使用率に応じて監視間隔を動的調整
-     * - 高負荷時はキャッシュサイズも縮小
-     * - 段階的なクリーンアップ処理
-     */
-    private fun checkMemoryUsage() {
-        val now = System.currentTimeMillis()
-        if (now - lastMemoryCheck < memoryCheckIntervalMs) return
-        lastMemoryCheck = now
-
-        val runtime = Runtime.getRuntime()
-        val usedMemory = runtime.totalMemory() - runtime.freeMemory()
-        val maxMemory = runtime.maxMemory()
-        val memoryUsageRatio = usedMemory.toFloat() / maxMemory.toFloat()
-
-        val memoryUsagePercent = (memoryUsageRatio * 100).toInt()
-        Log.d("DetailViewModel", "Memory usage: $memoryUsagePercent% (${usedMemory / 1024 / 1024}MB / ${maxMemory / 1024 / 1024}MB)")
-
-        // 段階的メモリ管理（統合版）
-        when {
-            memoryUsageRatio > 0.90f -> {
-                // 極度の高負荷：即座にアグレッシブクリーンアップ
-                Log.w("DetailViewModel", "Extreme memory usage ($memoryUsagePercent%), performing aggressive cleanup")
-                consecutiveHighMemoryCount++
-
-                clearNgFilterCache()
-                _plainTextCache.value = emptyMap()
-                MyApplication.clearCoilImageCache(appContext)
-                memoryCheckIntervalMs = 5000L
-
-                // カウントが際限なく増加しないよう上限でリセット
-                if (consecutiveHighMemoryCount >= 3) {
-                    Log.d("DetailViewModel", "Resetting high memory counter after aggressive cleanup")
-                    consecutiveHighMemoryCount = 0
-                }
-            }
-            memoryUsageRatio > 0.85f -> {
-                // 高負荷：アグレッシブクリーンアップ（GCは実行しない）
-                Log.w("DetailViewModel", "Critical memory usage ($memoryUsagePercent%), performing aggressive cleanup")
-                consecutiveHighMemoryCount++
-
-                clearNgFilterCache()
-                _plainTextCache.value = emptyMap()
-                MyApplication.clearCoilImageCache(appContext)
-                memoryCheckIntervalMs = 10000L
-
-                // カウントが際限なく増加しないよう上限でリセット
-                if (consecutiveHighMemoryCount >= 5) {
-                    Log.d("DetailViewModel", "Resetting high memory counter to prevent overflow")
-                    consecutiveHighMemoryCount = 0
-                }
-            }
-            memoryUsageRatio > 0.75f -> {
-                // 中高負荷：選択的クリーンアップ
-                Log.w("DetailViewModel", "High memory usage ($memoryUsagePercent%), performing selective cleanup")
-                consecutiveHighMemoryCount++
-
-                clearNgFilterCache()
-                val currentPlainCache = _plainTextCache.value
-                if (currentPlainCache.size > 20) {
-                    val reducedCache = currentPlainCache.toList().takeLast(10).toMap()
-                    _plainTextCache.value = reducedCache
-                }
-                MyApplication.clearCoilImageCache(appContext)
-                memoryCheckIntervalMs = 15000L
-
-                // カウントが際限なく増加しないよう上限でリセット
-                if (consecutiveHighMemoryCount >= 5) {
-                    consecutiveHighMemoryCount = 0
-                }
-            }
-            memoryUsageRatio > 0.70f -> {
-                // 中程度の負荷：軽度のクリーンアップ
-                consecutiveHighMemoryCount++
-                memoryCheckIntervalMs = 20000L
-                if (consecutiveHighMemoryCount >= 3) {
-                    Log.w("DetailViewModel", "Sustained memory pressure, clearing image cache")
-                    MyApplication.clearCoilImageCache(appContext)
-                    clearNgFilterCache()
-                    consecutiveHighMemoryCount = 0
-                }
-            }
-            memoryUsageRatio > 0.60f -> {
-                memoryCheckIntervalMs = 25000L
-                consecutiveHighMemoryCount = 0
-            }
-            else -> {
-                memoryCheckIntervalMs = 30000L
-                consecutiveHighMemoryCount = 0
-            }
-        }
-    }
-
-    /**
-     * メモリ使用量を即時に測定し、デバッグ表示用の概要文字列を返す。
-     */
-    fun forceMemoryCheck(): String {
-        val runtime = Runtime.getRuntime()
-        val usedMemory = runtime.totalMemory() - runtime.freeMemory()
-        val maxMemory = runtime.maxMemory()
-        val memoryUsageRatio = usedMemory.toFloat() / maxMemory.toFloat()
-
-        val coilInfo = MyApplication.getCoilCacheInfo(appContext)
-
-        return "Memory: ${(memoryUsageRatio * 100).toInt()}% (${usedMemory / 1024 / 1024}MB / ${maxMemory / 1024 / 1024}MB)\nCoil: $coilInfo"
-    }
+    private fun clearNgFilterCache() = memoryManager.clearNgFilterCache()
+    private fun checkMemoryUsage() = memoryManager.checkMemoryUsage()
+    fun forceMemoryCheck(): String = memoryManager.forceMemoryCheck()
 
     // ---- Search state (single source of truth) ----
     private var currentSearchQuery: String? = null
@@ -892,7 +768,7 @@ class DetailViewModel @Inject constructor(
     /** NGルールに基づきテキストと直後のメディア列を順次評価して返す（skipping 状態を全体で共有するため並列化しない）。 */
     private suspend fun filterByNgRulesOptimized(src: List<DetailContent>, rules: List<NgRule>): List<DetailContent> {
         val cacheKey = src to rules
-        ngFilterCache.get(cacheKey)?.let { return it }
+        memoryManager.ngFilterCache.get(cacheKey)?.let { return it }
 
         val result = DetailNgFilter.filter(
             items = src,
@@ -901,7 +777,7 @@ class DetailViewModel @Inject constructor(
             bodyOf = ::extractPlainBodyOfTextContent
         )
 
-        ngFilterCache.put(cacheKey, result)
+        memoryManager.ngFilterCache.put(cacheKey, result)
         return result
     }
 
@@ -1161,194 +1037,12 @@ class DetailViewModel @Inject constructor(
         }
     }
 
-    fun downloadImages(urls: List<String>) {
-        if (urls.isEmpty()) return
-
-        downloadJob?.cancel()
-        downloadJob = viewModelScope.launch {
-            _downloadProgress.value = DownloadProgress(0, urls.size, isActive = true)
-            var completed = 0
-
-            try {
-                val semaphore = kotlinx.coroutines.sync.Semaphore(4)
-                coroutineScope {
-                    val jobs = urls.map { url ->
-                        async(Dispatchers.IO) {
-                            semaphore.withPermit {
-                                val fileName = url.substringAfterLast('/')
-                                _downloadProgress.value = DownloadProgress(completed, urls.size, fileName, true)
-
-                                MediaSaver.saveImage(appContext, url, networkClient, referer = currentUrl)
-
-                                downloadProgressMutex.withLock {
-                                    completed++
-                                    _downloadProgress.value = DownloadProgress(completed, urls.size, fileName, true)
-                                }
-                            }
-                        }
-                    }
-                    jobs.awaitAll()
-                }
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                // キャンセルされた場合
-                throw e
-            } finally {
-                delay(500) // 完了表示を少し見せる
-                _downloadProgress.value = null
-                downloadJob = null
-            }
-        }
-    }
-
-    fun cancelDownload() {
-        downloadJob?.cancel()
-        downloadJob = null
-        _downloadProgress.value = null
-    }
-
-    fun downloadImagesSkipExisting(urls: List<String>) {
-        if (urls.isEmpty()) return
-
-        viewModelScope.launch {
-            val requestId = downloadRequestIdGenerator.incrementAndGet()
-            val existingByUrl = MediaSaver.findExistingImages(appContext, urls)
-            val pending = DetailBulkDownloadPlanner.createPendingRequest(requestId, urls, existingByUrl)
-
-            if (!DetailBulkDownloadPlanner.shouldShowConflictDialog(pending)) {
-                performBulkDownload(pending, DetailDownloadConflictResolution.SkipExisting)
-                return@launch
-            }
-
-            pendingDownloadMutex.withLock {
-                pendingDownloadRequests[requestId] = pending
-            }
-
-            _downloadConflictRequests.emit(
-                DetailBulkDownloadPlanner.buildConflictRequest(pending) { it.fileName }
-            )
-        }
-    }
-
-    fun confirmDownloadSkip(requestId: Long) {
-        viewModelScope.launch {
-            val pending = removePendingRequest(requestId) ?: return@launch
-            if (DetailBulkDownloadPlanner.hasNoDownloadTargets(pending, DetailDownloadConflictResolution.SkipExisting)) {
-                withContext(Dispatchers.Main) {
-                    val message = DetailDownloadMessageBuilder.buildNoTargetMessage(pending.existingCount)
-                    android.widget.Toast.makeText(appContext, message, android.widget.Toast.LENGTH_SHORT).show()
-                }
-                return@launch
-            }
-            performBulkDownload(pending, DetailDownloadConflictResolution.SkipExisting)
-        }
-    }
-
-    fun confirmDownloadOverwrite(requestId: Long) {
-        viewModelScope.launch {
-            val pending = removePendingRequest(requestId) ?: return@launch
-            performBulkDownload(pending, DetailDownloadConflictResolution.OverwriteExisting)
-        }
-    }
-
-    fun cancelDownloadRequest(requestId: Long) {
-        viewModelScope.launch {
-            pendingDownloadMutex.withLock {
-                pendingDownloadRequests.remove(requestId)
-            }
-            // 古いリクエストのクリーンアップ（メモリリーク防止）
-            cleanupOldDownloadRequests()
-        }
-    }
-
-    /**
-     * 古いダウンロードリクエストをクリーンアップする（メモリリーク防止）
-     */
-    private suspend fun cleanupOldDownloadRequests() {
-        pendingDownloadMutex.withLock {
-            if (pendingDownloadRequests.size > 5) {
-                // 最新の3件のみ保持（メモリ効率改善）
-                val sorted = pendingDownloadRequests.entries.sortedByDescending { it.key }
-                val toRemove = sorted.drop(3).map { it.key }
-                toRemove.forEach { pendingDownloadRequests.remove(it) }
-                Log.d("DetailViewModel", "Cleaned up ${toRemove.size} old download requests")
-            }
-        }
-    }
-
-    private suspend fun removePendingRequest(requestId: Long): DetailPendingDownloadRequest<MediaSaver.ExistingMedia>? {
-        return pendingDownloadMutex.withLock { pendingDownloadRequests.remove(requestId) }
-    }
-
-    private suspend fun performBulkDownload(
-        pending: DetailPendingDownloadRequest<MediaSaver.ExistingMedia>,
-        resolution: DetailDownloadConflictResolution
-    ) {
-        val urlsToDownload = DetailBulkDownloadPlanner.selectUrlsToDownload(pending, resolution)
-
-        val total = urlsToDownload.size
-
-        if (DetailBulkDownloadPlanner.hasNoDownloadTargets(pending, resolution)) {
-            withContext(Dispatchers.Main) {
-                val message = DetailDownloadMessageBuilder.buildNoTargetMessage(pending.existingCount)
-                android.widget.Toast.makeText(appContext, message, android.widget.Toast.LENGTH_SHORT).show()
-            }
-            return
-        }
-
-        if (total == 0) return
-
-        _downloadProgress.value = DownloadProgress(0, total, isActive = true)
-        var completed = 0
-        var stats = DetailBulkDownloadStats.initial(
-            resolution = when (resolution) {
-                DetailDownloadConflictResolution.SkipExisting -> DetailBulkDownloadStats.Resolution.SkipExisting
-                DetailDownloadConflictResolution.OverwriteExisting -> DetailBulkDownloadStats.Resolution.OverwriteExisting
-            },
-            existingCount = pending.existingCount
-        )
-
-        val semaphore = Semaphore(4)
-
-        try {
-            coroutineScope {
-                val jobs = urlsToDownload.map { url ->
-                    async(Dispatchers.IO) {
-                        semaphore.withPermit {
-                            val fileName = url.substringAfterLast('/')
-                            _downloadProgress.value = DownloadProgress(completed, total, fileName, true)
-                            val hasExisting = !pending.existingByUrl[url].isNullOrEmpty()
-                            val success = when (resolution) {
-                                DetailDownloadConflictResolution.SkipExisting ->
-                                    MediaSaver.saveImageIfNotExists(appContext, url, networkClient, referer = currentUrl)
-                                DetailDownloadConflictResolution.OverwriteExisting -> {
-                                    pending.existingByUrl[url]?.let { entries ->
-                                        MediaSaver.deleteMedia(appContext, entries)
-                                    }
-                                    MediaSaver.saveImageIfNotExists(appContext, url, networkClient, referer = currentUrl)
-                                }
-                            }
-
-                            downloadProgressMutex.withLock {
-                                stats = stats.recordResult(success = success, hadExistingFile = hasExisting)
-                                completed++
-                                _downloadProgress.value = DownloadProgress(completed, total, fileName, true)
-                            }
-                        }
-                    }
-                }
-
-                jobs.awaitAll()
-            }
-
-            withContext(Dispatchers.Main) {
-                val message = stats.buildMessage()
-                android.widget.Toast.makeText(appContext, message, android.widget.Toast.LENGTH_SHORT).show()
-            }
-        } finally {
-            delay(500)
-            _downloadProgress.value = null
-        }
-    }
+    fun downloadImages(urls: List<String>) = downloadDelegate.downloadImages(urls)
+    fun cancelDownload() = downloadDelegate.cancelDownload()
+    fun downloadImagesSkipExisting(urls: List<String>) = downloadDelegate.downloadImagesSkipExisting(urls)
+    fun confirmDownloadSkip(requestId: Long) = downloadDelegate.confirmDownloadSkip(requestId)
+    fun confirmDownloadOverwrite(requestId: Long) = downloadDelegate.confirmDownloadOverwrite(requestId)
+    fun cancelDownloadRequest(requestId: Long) = downloadDelegate.cancelDownloadRequest(requestId)
 
     // ========== スレッド保存機能 ==========
 

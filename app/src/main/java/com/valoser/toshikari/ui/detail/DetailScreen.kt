@@ -51,8 +51,6 @@ import androidx.compose.material.icons.automirrored.rounded.Reply
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.KeyboardDoubleArrowDown
-import androidx.compose.material.icons.rounded.RecordVoiceOver
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.SuggestionChip
@@ -75,16 +73,12 @@ import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.composed
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
-import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.style.TextOverflow
 import com.valoser.toshikari.DetailContent
@@ -342,87 +336,22 @@ fun DetailScreenScaffold(
                 IconButton(onClick = { moreExpanded = true }) {
                     Icon(Icons.Rounded.MoreVert, contentDescription = "More")
                 }
-                androidx.compose.material3.DropdownMenu(
+                DetailToolbarDropdownMenu(
                     expanded = moreExpanded,
-                    onDismissRequest = { moreExpanded = false }
-                ) {
-                    // 基本操作グループ
-                    androidx.compose.material3.DropdownMenuItem(
-                        text = { Text("一番下まで飛ぶ") },
-                        leadingIcon = { Icon(Icons.Rounded.KeyboardDoubleArrowDown, contentDescription = "一番下まで飛ぶ") },
-                        onClick = {
-                            moreExpanded = false
-                            jumpToBottomRequest = if (jumpToBottomRequest == Int.MAX_VALUE) 1 else jumpToBottomRequest + 1
-                        }
-                    )
-                    androidx.compose.material3.DropdownMenuItem(
-                        text = { Text("再読み込み") },
-                        leadingIcon = { Icon(Icons.Rounded.Refresh, contentDescription = "再読み込み") },
-                        onClick = {
-                            moreExpanded = false
-                            onReload()
-                        }
-                    )
-                    androidx.compose.material3.DropdownMenuItem(
-                        text = { Text("メディア一覧") },
-                        leadingIcon = { Icon(Icons.Rounded.Image, contentDescription = "メディア一覧") },
-                        onClick = {
-                            moreExpanded = false
-                            openMediaSheet = true
-                        }
-                    )
-
-
-                    // ダウンロード関連グループ
-                    androidx.compose.material3.DropdownMenuItem(
-                        text = { Text("画像一括ダウンロード") },
-                        leadingIcon = { Icon(Icons.Rounded.Download, contentDescription = "ダウンロード") },
-                        onClick = {
-                            moreExpanded = false
-                            onBulkDownloadImagesSkipExisting?.invoke()
-                        }
-                    )
-                    if (promptFeaturesEnabled) {
-                        androidx.compose.material3.DropdownMenuItem(
-                            text = { Text("プロンプト付き画像DL") },
-                            leadingIcon = { Icon(Icons.Rounded.Download, contentDescription = "ダウンロード") },
-                            onClick = {
-                                moreExpanded = false
-                                onBulkDownloadPromptImagesSkipExisting?.invoke()
-                            }
-                        )
-                    }
-                    if (onArchiveThread != null) {
-                        androidx.compose.material3.DropdownMenuItem(
-                            text = { Text("スレッド保存") },
-                            leadingIcon = { Icon(Icons.Rounded.Download, contentDescription = "ダウンロード") },
-                            onClick = {
-                                moreExpanded = false
-                                onArchiveThread()
-                            }
-                        )
-                    }
-
-
-                    // その他機能グループ
-                    androidx.compose.material3.DropdownMenuItem(
-                        text = { Text("音声読み上げ") },
-                        leadingIcon = { Icon(Icons.Rounded.RecordVoiceOver, contentDescription = "音声読み上げ") },
-                        onClick = { moreExpanded = false; onTtsStart?.invoke() }
-                    )
-                    androidx.compose.material3.DropdownMenuItem(
-                        text = { Text("NG 管理") },
-                        leadingIcon = { Icon(Icons.Rounded.Block, contentDescription = "NG管理") },
-                        onClick = { moreExpanded = false; onOpenNg() }
-                    )
-                    if (onImageEdit != null) {
-                        androidx.compose.material3.DropdownMenuItem(
-                            text = { Text("画像編集") },
-                            leadingIcon = { Icon(Icons.Rounded.Edit, contentDescription = "編集") },
-                            onClick = { moreExpanded = false; onImageEdit() }
-                        )
-                    }
-                }
+                    onDismiss = { moreExpanded = false },
+                    onJumpToBottom = {
+                        jumpToBottomRequest = if (jumpToBottomRequest == Int.MAX_VALUE) 1 else jumpToBottomRequest + 1
+                    },
+                    onReload = onReload,
+                    onOpenMediaSheet = { openMediaSheet = true },
+                    onBulkDownloadImages = onBulkDownloadImagesSkipExisting,
+                    onBulkDownloadPromptImages = onBulkDownloadPromptImagesSkipExisting,
+                    onArchiveThread = onArchiveThread,
+                    onTtsStart = onTtsStart,
+                    onOpenNg = onOpenNg,
+                    onImageEdit = onImageEdit,
+                    promptFeaturesEnabled = promptFeaturesEnabled,
+                )
             },
             colors = TopAppBarDefaults.topAppBarColors(
                 containerColor = MaterialTheme.colorScheme.surface,
@@ -1578,278 +1507,6 @@ fun DetailScreenScaffold(
     }
 }
 
-/**
- * シンプルなバナー広告ホスト（Google Mobile Ads の `AdView`）。
- * - 実測高さを `onHeightChanged` で通知し、レイアウト側で下部パディングに反映できるようにする。
- * - 幅は親に追従し、高さは選択した AdSize に依存する。
- */
-@Composable
-private fun AdBanner(adUnitId: String, onHeightChanged: (Int) -> Unit) {
-    AndroidView(
-        modifier = Modifier.fillMaxWidth(),
-        factory = { ctx ->
-            com.google.android.gms.ads.AdView(ctx).apply {
-                setAdSize(com.google.android.gms.ads.AdSize.BANNER)
-                this.adUnitId = adUnitId
-                loadAd(com.google.android.gms.ads.AdRequest.Builder().build())
-                viewTreeObserver.addOnGlobalLayoutListener {
-                    onHeightChanged(measuredHeight)
-                }
-                
-            }
-        },
-        update = { v: com.google.android.gms.ads.AdView -> onHeightChanged(v.measuredHeight) }
-    )
-}
-
-/**
- * 検索用ナビゲーションバー（下部オーバーレイ）。
- * 現在位置/総ヒット数を表示し、矢印押下で `onPrev` / `onNext` を呼び出す。
- */
-@Composable
-private fun SearchNavigationBar(
-    modifier: Modifier = Modifier,
-    current: Int,
-    total: Int,
-    onPrev: () -> Unit,
-    onNext: () -> Unit,
-) {
-    androidx.compose.material3.Surface(
-        modifier = modifier,
-        tonalElevation = 4.dp,
-        color = MaterialTheme.colorScheme.surface,
-        contentColor = MaterialTheme.colorScheme.onSurface,
-        shape = androidx.compose.material3.MaterialTheme.shapes.medium
-    ) {
-        androidx.compose.foundation.layout.Row(
-            modifier = Modifier
-                .padding(horizontal = LocalSpacing.current.s, vertical = LocalSpacing.current.xs),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = onPrev) {
-                Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Prev")
-            }
-            Text(
-                text = if (total > 0 && current in 1..total) "$current/$total" else "0/0",
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(horizontal = LocalSpacing.current.s)
-            )
-            IconButton(onClick = onNext) {
-                Icon(imageVector = Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "Next")
-            }
-        }
-    }
-}
-
-/**
- * ドック型検索 UI 内で使う簡易サジェスト用の AssistChip。
- */
-@Composable
-private fun QuickFilterChip(label: String, onClick: () -> Unit) {
-    AssistChip(
-        onClick = onClick,
-        label = { Text(label) },
-        colors = AssistChipDefaults.assistChipColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant,
-            labelColor = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    )
-}
-
-/**
- * TTS音声読み上げ制御パネル（下部オーバーレイ）。
- * 再生/一時停止、停止、スキップボタンと現在読み上げ中のレス番号を表示。
- */
-@Composable
-private fun TtsControlPanel(
-    modifier: Modifier = Modifier,
-    isPlaying: Boolean,
-    currentResNum: String?,
-    onPlayPause: () -> Unit,
-    onStop: () -> Unit,
-    onSkipPrevious: () -> Unit,
-    onSkipNext: () -> Unit,
-) {
-    androidx.compose.material3.Surface(
-        modifier = modifier,
-        tonalElevation = 4.dp,
-        color = MaterialTheme.colorScheme.surface,
-        contentColor = MaterialTheme.colorScheme.onSurface,
-        shape = androidx.compose.material3.MaterialTheme.shapes.medium
-    ) {
-        Row(
-            modifier = Modifier
-                .padding(horizontal = LocalSpacing.current.s, vertical = LocalSpacing.current.xs),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(LocalSpacing.current.xs)
-        ) {
-            IconButton(onClick = onSkipPrevious) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Previous"
-                )
-            }
-            IconButton(onClick = onPlayPause) {
-                Icon(
-                    imageVector = if (isPlaying) Icons.Rounded.Block else Icons.AutoMirrored.Rounded.Reply,
-                    contentDescription = if (isPlaying) "Pause" else "Play"
-                )
-            }
-            IconButton(onClick = onStop) {
-                Icon(
-                    imageVector = Icons.Rounded.Close,
-                    contentDescription = "Stop"
-                )
-            }
-            IconButton(onClick = onSkipNext) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                    contentDescription = "Next"
-                )
-            }
-            if (currentResNum != null) {
-                Text(
-                    text = "No.$currentResNum",
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.padding(start = LocalSpacing.current.s)
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun DetailQuickActions(
-    modifier: Modifier = Modifier,
-    onReload: () -> Unit,
-    onOpenMedia: () -> Unit,
-    onOpenNg: () -> Unit,
-    onImageEdit: (() -> Unit)?,
-    onTtsStart: (() -> Unit)?,
-) {
-    val spacing = LocalSpacing.current
-    val scrollState = rememberScrollState()
-    Row(
-        modifier = modifier.horizontalScroll(scrollState),
-        horizontalArrangement = Arrangement.spacedBy(spacing.s)
-    ) {
-        FilledTonalButton(onClick = onReload) {
-            Icon(Icons.Rounded.Refresh, contentDescription = "再読み込み", modifier = Modifier.size(18.dp))
-            Spacer(modifier = Modifier.width(spacing.xs))
-            Text("再読み込み")
-        }
-        FilledTonalButton(onClick = onOpenMedia) {
-            Icon(Icons.Rounded.Image, contentDescription = "メディア一覧", modifier = Modifier.size(18.dp))
-            Spacer(modifier = Modifier.width(spacing.xs))
-            Text("メディア一覧")
-        }
-        OutlinedButton(onClick = onOpenNg) {
-            Icon(Icons.Rounded.Block, contentDescription = "NG管理", modifier = Modifier.size(18.dp))
-            Spacer(modifier = Modifier.width(spacing.xs))
-            Text("NG管理")
-        }
-        if (onImageEdit != null) {
-            OutlinedButton(onClick = onImageEdit) {
-                Icon(Icons.Rounded.Edit, contentDescription = "画像編集", modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(spacing.xs))
-                Text("画像編集")
-            }
-        }
-        if (onTtsStart != null) {
-            OutlinedButton(onClick = onTtsStart) {
-                Icon(Icons.Rounded.PlayArrow, contentDescription = "読み上げ", modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(spacing.xs))
-                Text("読み上げ")
-            }
-        }
-    }
-}
-
-private fun Modifier.bottomPullRefresh(
-    listState: LazyListState,
-    isRefreshing: Boolean,
-    enabled: Boolean,
-    onRefresh: () -> Unit,
-    triggerDistance: Dp = 72.dp,
-): Modifier = composed {
-    if (!enabled) {
-        return@composed this
-    }
-    val refreshed = rememberUpdatedState(onRefresh)
-    val refreshingState = rememberUpdatedState(isRefreshing)
-    val triggerPx = with(LocalDensity.current) { triggerDistance.toPx() }
-    var dragAccumulated by remember { mutableFloatStateOf(0f) }
-    var gestureTriggered by remember { mutableStateOf(false) }
-
-    val reset: () -> Unit = {
-        dragAccumulated = 0f
-        gestureTriggered = false
-    }
-
-    LaunchedEffect(refreshingState.value) {
-        if (!refreshingState.value) {
-            reset()
-        }
-    }
-
-    val connection = remember(listState, triggerPx, enabled) {
-        object : NestedScrollConnection {
-            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                if (!enabled) {
-                    reset()
-                    return Offset.Zero
-                }
-                if (source != NestedScrollSource.UserInput) return Offset.Zero
-                if (available.y >= 0f) {
-                    reset()
-                    return Offset.Zero
-                }
-                if (!listState.isScrolledToEnd()) {
-                    reset()
-                    return Offset.Zero
-                }
-                dragAccumulated += -available.y
-                if (!gestureTriggered && !refreshingState.value && dragAccumulated >= triggerPx) {
-                    gestureTriggered = true
-                    refreshed.value.invoke()
-                }
-                return Offset.Zero
-            }
-
-            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
-                if (!enabled) {
-                    reset()
-                    return Offset.Zero
-                }
-                if (source == NestedScrollSource.UserInput) {
-                    val changedDirection = available.y > 0f || consumed.y > 0f
-                    if (changedDirection || !listState.isScrolledToEnd()) {
-                        reset()
-                    }
-                } else if (!listState.isScrolledToEnd()) {
-                    reset()
-                }
-                return Offset.Zero
-            }
-
-            override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
-                reset()
-                return Velocity.Zero
-            }
-        }
-    }
-
-    this.nestedScroll(connection)
-}
-
-private fun LazyListState.isScrolledToEnd(): Boolean {
-    val layout = layoutInfo
-    if (layout.totalItemsCount == 0) return false
-    val lastVisible = layout.visibleItemsInfo.lastOrNull() ?: return false
-    if (lastVisible.index < layout.totalItemsCount - 1) return false
-    val effectiveEnd = (layout.viewportEndOffset - layout.afterContentPadding)
-        .coerceAtMost(layout.viewportEndOffset)
-        .coerceAtLeast(0)
-    val itemEnd = lastVisible.offset + lastVisible.size
-    return itemEnd >= effectiveEnd
-}
+// AdBanner, SearchNavigationBar, QuickFilterChip, TtsControlPanel, DetailQuickActions,
+// DetailToolbarDropdownMenu は DetailScreenComponents.kt に分離済み
+// bottomPullRefresh, isScrolledToEnd は DetailScreenModifiers.kt に分離済み

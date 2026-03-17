@@ -1,19 +1,19 @@
 package com.valoser.toshikari.ui.detail
 
 internal data class DetailResTokenMatch(
-    val start: Int,
-    val end: Int,
+    override val start: Int,
+    override val end: Int,
     val number: String
-)
+) : DetailTokenMatch
 
 /**
  * 表示テキスト内の `No.xxx` トークンを位置付きで抽出する補助。
  * ヘッダー行か引用行に含まれるものだけを対象にする。
  */
-internal object DetailResTokenFinder {
+internal object DetailResTokenFinder : DetailTokenFinder<DetailResTokenMatch> {
     private val resPattern = Regex("""(?i)[NＮ][oＯｏ][.\uFF0E．]?\s*(\d+)""")
 
-    fun findMatches(text: String): List<DetailResTokenMatch> {
+    override fun findMatches(text: String): List<DetailResTokenMatch> {
         return resPattern.findAll(text).mapNotNull { match ->
             val matchStart = match.range.first
             val lineStart = text.lastIndexOf('\n', matchStart).let { if (it < 0) 0 else it + 1 }

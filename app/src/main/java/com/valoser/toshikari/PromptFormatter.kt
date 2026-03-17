@@ -341,75 +341,12 @@ object PromptFormatter {
         return PromptViewData(positive, negative, settings)
     }
 
-    /**
-     * 大文字で始まる `Xxx: value` 形式の行を削除します。
-     */
-    private fun stripSettingsLines(text: String?): String {
-        if (text.isNullOrBlank()) return text ?: ""
-        val headerLike = Regex("""(?im)^[ \t]*[A-Z][\w ]+:\s?.*$\r?\n?""")
-        return text.replace(headerLike, "").trim()
-    }
+    private fun stripSettingsLines(text: String?): String =
+        PromptFormatterSupport.stripSettingsLines(text)
 
-    // --------------------
-    // タグ分割
-    // --------------------
-    /**
-     * タグ文字列をカンマで分割します。
-     *
-     * - 括弧 `()` や山括弧 `<>` の内部、エスケープされたカンマは分割しません。
-     * - 重み表記は `normalizeWeight` でユーザー向け表記に整えます。
-     */
-    private fun splitTags(src: String?): List<String> {
-        if (src.isNullOrBlank()) return emptyList()
-        val out = mutableListOf<String>()
-        val sb = StringBuilder()
-        var depthParen = 0
-        var depthAngle = 0
-        var escape = false
+    private fun splitTags(src: String?): List<String> =
+        PromptFormatterSupport.splitTags(src)
 
-        fun flush() {
-            val raw = sb.toString().trim()
-            if (raw.isNotEmpty()) out += normalizeWeight(raw)
-            sb.setLength(0)
-        }
-
-        src.forEach { ch ->
-            if (escape) { sb.append(ch); escape = false; return@forEach }
-            when (ch) {
-                '\\' -> { sb.append(ch); escape = true }
-                '('  -> { depthParen++; sb.append(ch) }
-                ')'  -> { depthParen = (depthParen - 1).coerceAtLeast(0); sb.append(ch) }
-                '<'  -> { depthAngle++; sb.append(ch) }
-                '>'  -> { depthAngle = (depthAngle - 1).coerceAtLeast(0); sb.append(ch) }
-                ','  -> if (depthParen == 0 && depthAngle == 0) flush() else sb.append(ch)
-                else -> sb.append(ch)
-            }
-        }
-        flush()
-
-        return out.map { it.replace("\\(", "(").replace("\\)", ")").replace("\\,", ",") }
-    }
-
-    /**
-     * 重み表記をユーザー向けに正規化します。
-     *
-     * - `(tag: 1.2)` または `tag: 1.2` を `tag (×1.2)` に変換。
-     * - `<>` で囲まれた特殊タグ（例: LoRA 表記）はそのまま返します。
-     */
-    private fun normalizeWeight(tag: String): String {
-        val t = tag.trim()
-        if (t.startsWith("<") && t.endsWith(">")) return t
-
-        val paren = Regex("""^\(([^():]+):\s*([0-9.]+)\)$""")
-        paren.matchEntire(t)?.let { m ->
-            return "${m.groupValues[1].trim()} (×${m.groupValues[2].trim()})"
-        }
-
-        val plain = Regex("""^([^():]+):\s*([0-9.]+)$""")
-        plain.matchEntire(t)?.let { m ->
-            return "${m.groupValues[1].trim()} (×${m.groupValues[2].trim()})"
-        }
-
-        return t
-    }
+    private fun normalizeWeight(tag: String): String =
+        PromptFormatterSupport.normalizeWeight(tag)
 }

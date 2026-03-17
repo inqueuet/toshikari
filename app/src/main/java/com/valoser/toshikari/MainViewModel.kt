@@ -52,10 +52,8 @@ import okhttp3.Request
 import okhttp3.coroutines.executeAsync
 import java.util.concurrent.TimeUnit
 import org.jsoup.nodes.Document
-import org.jsoup.Jsoup
 import java.net.URL
 import javax.inject.Inject
-import android.util.LruCache
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
@@ -94,23 +92,12 @@ class MainViewModel @Inject constructor(
     }
 
     companion object {
-        // 正規表現をプリコンパイル
-        private val THUMB_PATTERN = Regex("(/thumb/|/cat/|/jun/)")
-        private val EXTENSION_PATTERN = Regex("s\\.(jpg|jpeg|png|gif|webp|webm|mp4)$", RegexOption.IGNORE_CASE)
-        private val VALID_EXTENSION_PATTERN = Regex("\\.(jpg|jpeg|png|gif|webp|webm|mp4)$", RegexOption.IGNORE_CASE)
-
         private const val PREVIEW_BATCH_SIZE = 4
         private const val PREVIEW_BATCH_DELAY_MS = 5L
         private const val FULL_BATCH_DELAY_MS = 50L
         // カタログ1回あたりのフル画像プリフェッチ対象件数上限
         private const val FULL_PREFETCH_LIMIT = 12
     }
-
-    // URL推測結果をキャッシュ（サイズを拡大）
-    // nullと未キャッシュを区別するためOptionalラッパーを使用
-    private data class CachedUrl(val url: String?)
-    private val urlGuessCache = LruCache<String, CachedUrl>(500)
-    private val failedUrlCache = LruCache<String, Boolean>(200)
     private val threadWatchStore by lazy { ThreadWatchStore(appContext) }
 
     // 画像ロード/解析などの IO をまとめる専用 Dispatcher（並列度を制限）
@@ -404,51 +391,8 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    /**
-     * プレビューURLからフル画像URLを推測する。
-     * - `/thumb/` または `/cat/` を `/src/` に置換
-     * - 末尾の `s.` を通常拡張子（.jpg/.png 等）に置換（webm/mp4 も対象）
-     * 失敗時は `null` を返す。
-     */
-    private fun guessFullFromPreview(previewUrl: String): String? {
-        // キャッシュから取得（CachedUrlでラップされているのでnullと未キャッシュを区別可能）
-        val cached = urlGuessCache.get(previewUrl)
-        if (cached != null) {
-            return cached.url
-        }
-
-        // 既に失敗記録があるなら即座にnullを返す
-        if (failedUrlCache.get(previewUrl) == true) return null
-
-        val result = guessFullFromPreviewInternal(previewUrl)
-        // 結果をキャッシュ（nullでもCachedUrlとして保存）
-        urlGuessCache.put(previewUrl, CachedUrl(result))
-        if (result == null) {
-            failedUrlCache.put(previewUrl, true)
-        }
-        return result
-    }
-
-    private fun guessFullFromPreviewInternal(previewUrl: String): String? {
-        return try {
-            var s = previewUrl
-                .replace("/thumb/", "/src/")
-                .replace("/cat/", "/src/")
-                .replace("/jun/", "/src/")
-
-            // 末尾の "s.ext" を通常の拡張子へ（例: 12345s.jpg -> 12345.jpg）
-            s = s.replace(EXTENSION_PATTERN, ".$1")
-
-            // 既に正しい拡張子形式ならそのまま、拡張子が無ければ .jpg を仮置き
-            s = when {
-                s.contains(VALID_EXTENSION_PATTERN) -> s
-                else -> "$s.jpg"
-            }
-            URL(s).toString()
-        } catch (_: Exception) {
-            null
-        }
-    }
+    private fun guessFullFromPreview(previewUrl: String): String? =
+        CatalogUrlResolver.guessFullFromPreview(previewUrl)
 
     // 拡張子バリアントの列挙・検証は廃止
 
@@ -598,13 +542,8 @@ class MainViewModel @Inject constructor(
         return null
     }
 
-    private fun isMediaHref(raw: String): Boolean {
-        val h = raw.lowercase()
-        return h.contains("/src/") ||
-                h.endsWith(".png") || h.endsWith(".jpg") || h.endsWith(".jpeg") ||
-                h.endsWith(".gif") || h.endsWith(".webp") ||
-                h.endsWith(".webm") || h.endsWith(".mp4")
-    }
+    private fun isMediaHref(raw: String): Boolean =
+        CatalogUrlResolver.isMediaHref(raw)
 
     /**
      * URL の存在確認を行う。
@@ -834,93 +773,11 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    /**
-     * ドキュメントから ImageItem のリストを解析する。
-     * 構造に応じて処理を振り分け（#cattable 優先、準備ページは空、なければ cgi 風フォールバック）。
-     */
-    private fun parseItemsFromDocument(document: Document, url: String): List<ImageItem> {
-        // 1) まず #cattable を最優先（cgi でも普通に存在する）
-        val hasCatalogTable = document.select("#cattable td").isNotEmpty()
-        if (hasCatalogTable) return parseFromCattable(document)
+    private fun parseItemsFromDocument(document: Document, url: String): List<ImageItem> =
+        CatalogHtmlParser.parseItemsFromDocument(document, url)
 
-        // 2) 一部の準備ページは空
-        if (url.contains("/junbi/")) return emptyList()
-
-        // 3) 最後の手段として旧 cgi 風のフォールバック
-        return parseCgiFallback(document)
-    }
-
-    // #cattable 用パーサ（旧実装の整理版）。
-    // <img> が無い行は res/{id}.htm からIDを抜き、候補URLを構築すると同時に previewUnavailable を立てる。
-    private fun parseFromCattable(document: Document): List<ImageItem> {
-        val parsedItems = mutableListOf<ImageItem>()
-        val cells = document.select("#cattable td")
-
-        for (cell in cells) {
-            val linkTag = cell.selectFirst("a") ?: continue
-            val detailUrl = linkTag.absUrl("href")
-
-            // 1) まず通常通り <img> があればそれを使う
-            val imgTag = linkTag.selectFirst("img")
-            var imageUrl: String? = imgTag?.absUrl("src")
-            var missingPreview = false
-
-            // 2) <img> が無い（今回のHTMLのような）場合、res/{id}.htm から id を抜いて推測構築（候補列挙は行うが選定は後段の検証に委譲）
-            if (imageUrl.isNullOrEmpty()) {
-                val href = linkTag.attr("href") // 例: "res/178828.htm"
-                val m = Regex("""res/(\d+)\.htm""").find(href)
-                if (m != null) {
-                    val id = m.groupValues[1]
-                    // 例: https://zip.2chan.net/32/res/... -> https://zip.2chan.net/32
-                    val boardBase = detailUrl.substringBeforeLast("/res/")
-                    // 2chan のカタログは "cat/{id}s.{ext}" 形式が基本（小サムネ）。
-                    // まずもっとも一般的な jpg を既定にし、後段の HEAD 検証と 404 修正で適正化する。
-                    imageUrl = "$boardBase/cat/${id}s.jpg"
-                    missingPreview = true
-                }
-            }
-
-            // サムネイルURLが最終的に得られない場合はスキップ
-            val validImageUrl = imageUrl?.takeIf { it.isNotEmpty() } ?: continue
-
-            // タイトル・レス数（無ければ空でOK）
-            val title = firstLineFromSmall(cell.selectFirst("small"))
-            val replies = cell.selectFirst("font")?.text() ?: ""
-
-            parsedItems.add(
-                ImageItem(
-                    previewUrl = validImageUrl,
-                    title = title,
-                    replyCount = replies,
-                    detailUrl = detailUrl,
-                    fullImageUrl = null,
-                    previewUnavailable = missingPreview
-                )
-            )
-        }
-        return parsedItems
-    }
-
-    /**
-     * サムネイル候補URL（cat/thumb の拡張子違い）を列挙する。
-     */
-    private fun buildCatalogThumbCandidates(detailUrl: String): List<String> {
-        val m = Regex("""/res/(\d+)\.htm""").find(detailUrl) ?: return emptyList()
-        val id = m.groupValues[1]
-        val boardBase = detailUrl.substringBeforeLast("/res/")
-        // 優先度順: cat/{id}s.* → cat/{id}.* → thumb/{id}s.*
-        return listOf(
-            "$boardBase/cat/${id}s.jpg",
-            "$boardBase/cat/${id}s.png",
-            "$boardBase/cat/${id}s.webp",
-            "$boardBase/cat/$id.jpg",
-            "$boardBase/cat/$id.png",
-            "$boardBase/cat/$id.webp",
-            "$boardBase/thumb/${id}s.jpg",
-            "$boardBase/thumb/${id}s.png",
-            "$boardBase/thumb/${id}s.webp"
-        )
-    }
+    private fun buildCatalogThumbCandidates(detailUrl: String): List<String> =
+        CatalogUrlResolver.buildCatalogThumbCandidates(detailUrl)
 
     // 瞬間的な未反映（画像転送遅延等）に備え、短い遅延＋微小ジッターをはさみ1回だけ確認する
     private suspend fun urlExistsTwoStage(url: String, referer: String? = null): Boolean {
@@ -969,44 +826,6 @@ class MainViewModel @Inject constructor(
 
     // 先着レースは廃止
 
-    // small 要素から <br> より前の一行目を抽出してプレーンテキスト化
-    // - 例: "タイトル<br>サブタイトル" → "タイトル"
-    // - `<br>` が無い場合は全体をプレーン化して trim のみ
-    private fun firstLineFromSmall(small: org.jsoup.nodes.Element?): String {
-        val html = small?.html() ?: return ""
-        val idx = html.indexOf("<br", ignoreCase = true)
-        val head = if (idx >= 0) html.substring(0, idx) else html
-        return try {
-            Jsoup.parse(head).text().trim()
-        } catch (_: Exception) {
-            head.replace(Regex("<[^>]+>"), "").trim()
-        }
-    }
-
-    // 置き換え：cgi フォールバック（旧 parseForCgiServer を安全側に縮約）
-    private fun parseCgiFallback(document: Document): List<ImageItem> {
-        val parsedItems = mutableListOf<ImageItem>()
-        val links = document.select("a[href*='/res/']")
-
-        for (linkTag in links) {
-            val imgTag = linkTag.selectFirst("img") ?: continue
-            val imageUrl = imgTag.absUrl("src")
-            val detailUrl = linkTag.absUrl("href")
-            val infoText = firstLineFromSmall(linkTag.parent()?.selectFirst("small"))
-            if (imageUrl.isNotEmpty() && detailUrl.isNotEmpty()) {
-                parsedItems.add(
-                    ImageItem(
-                        previewUrl = imageUrl,
-                        title = infoText,
-                        replyCount = "",
-                        detailUrl = detailUrl,
-                        fullImageUrl = null
-                    )
-                )
-            }
-        }
-        return parsedItems
-    }
 
     /**
      * 実画像の描画成功をUIから通知する。

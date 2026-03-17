@@ -192,32 +192,8 @@ class ReplyRepository @Inject constructor(
             }.getOrElse { emptyList() }
             val jarCookie = jarCookies.joinToString("; ") { "${it.name}=${it.value}" }.ifBlank { null }
 
-            fun parseCookieString(s: String?): Map<String, String> =
-                s?.split(";")?.mapNotNull { segment ->
-                    val trimmed = segment.trim()
-                    if (trimmed.isEmpty()) return@mapNotNull null
-
-                    val i = trimmed.indexOf('=')
-                    if (i < 0) {
-                        // '='がない場合は値なしのCookieとして扱う（空文字列値）
-                        trimmed to ""
-                    } else if (i == 0) {
-                        // '='が先頭にある場合は無効なCookieとして無視
-                        null
-                    } else {
-                        // 通常のkey=value形式
-                        val key = trimmed.substring(0, i).trim()
-                        val value = if (i + 1 < trimmed.length) {
-                            trimmed.substring(i + 1).trim()
-                        } else {
-                            "" // '='の後に何もない場合は空文字列
-                        }
-                        if (key.isEmpty()) null else key to value
-                    }
-                }?.toMap() ?: emptyMap()
-
             // 同名キーは WebView を優先
-            val merged = parseCookieString(jarCookie) + parseCookieString(webViewCookie)
+            val merged = NetworkClientCookieSupport.parseCookieString(jarCookie) + NetworkClientCookieSupport.parseCookieString(webViewCookie)
             val mergedCookie = merged.entries.joinToString("; ") { "${it.key}=${it.value}" }.ifBlank { null }
 
             // UA を WebView / TokenProvider と合わせる（ptua 整合）
@@ -263,7 +239,7 @@ class ReplyRepository @Inject constructor(
 
                  val trimmed = decoded.trim()
                 // 1) JSON なら thisno を抜いて返す（例: {"status":"ok","thisno":1345629398,...}）
-                val jsonThisNo = Regex("""\"thisno\"\s*:\s*(\d{6,})""").find(trimmed)?.groupValues?.getOrNull(1)
+                val jsonThisNo = ReplyRepositorySupport.extractJsonThisNo(trimmed)
                 if (jsonThisNo != null) {
                     return@use "送信完了 No.$jsonThisNo"
                 }
@@ -272,12 +248,12 @@ class ReplyRepository @Inject constructor(
                 //    Futaba の成功ページは非常に短い（content-length ~ 80-120）ことが多い。
                 if (!looksLikeError(trimmed)) {
                     // HTML 側からも番号らしきものが拾えれば返す（数字6桁以上が多い）
-                    val htmlNo = Regex("""No\.?\s*(\d{6,})""").find(trimmed)?.groupValues?.getOrNull(1)
+                    val htmlNo = ReplyRepositorySupport.extractHtmlPostNo(trimmed)
                     if (!htmlNo.isNullOrBlank()) {
                         return@use "送信完了 No.$htmlNo"
                     }
                     // 番号が見つからなくても成功として文言を返す
-                    if (Regex("書きこみ|完了|送信完了").containsMatchIn(trimmed)) {
+                    if (ReplyRepositorySupport.containsSuccessKeyword(trimmed)) {
                         return@use "送信完了"
                     }
                 }
@@ -323,39 +299,8 @@ class ReplyRepository @Inject constructor(
             }
         }
 
-    /**
-     * エラー判定の精度向上：HTMLタグを除去してからマッチング、文脈を考慮した判定
-     */
-    private fun looksLikeError(html: String): Boolean {
-        // HTMLタグを除去してプレーンテキストで判定
-        val plainText = try {
-            org.jsoup.Jsoup.parse(html).text()
-        } catch (e: Exception) {
-            html.replace(Regex("<[^>]+>"), "")
-        }
-
-        // より正確なエラーパターン判定
-        val errorPatterns = listOf(
-            Regex("エラー.*発生", RegexOption.IGNORE_CASE),
-            Regex("書.*込.*失敗|投稿.*失敗", RegexOption.IGNORE_CASE),
-            Regex("連続.*投稿|連投", RegexOption.IGNORE_CASE),
-            Regex("本文.*必要|本文.*なし", RegexOption.IGNORE_CASE),
-            Regex("規制.*中|ブロック.*中", RegexOption.IGNORE_CASE),
-            Regex("時間.*おいて|しばらく.*待", RegexOption.IGNORE_CASE),
-            Regex("Cookie.*無効|セッション.*切れ", RegexOption.IGNORE_CASE)
-        )
-
-        // 成功を示すキーワードがある場合は成功として扱う
-        val successPatterns = listOf(
-            Regex("書.*込.*まし|送信.*完了|投稿.*完了", RegexOption.IGNORE_CASE),
-            Regex("No\\.?\\s*\\d{6,}", RegexOption.IGNORE_CASE)
-        )
-
-        val hasSuccessPattern = successPatterns.any { it.containsMatchIn(plainText) }
-        if (hasSuccessPattern) return false
-
-        return errorPatterns.any { it.containsMatchIn(plainText) }
-    }
+    private fun looksLikeError(html: String): Boolean =
+        ReplyRepositorySupport.looksLikeError(html)
 
     /**
      * 文字列を Shift_JIS として `RequestBody` に変換します。

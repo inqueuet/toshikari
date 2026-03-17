@@ -680,91 +680,8 @@ class ThreadArchiver(
      *  - 既存のブロック要素はそのまま保持（<p> 内に入れない）
      *  - 長大な <blockquote> は <details class="long-quote"> で折りたたみ
      */
-    private fun formatParagraphsAndQuotes(rawHtml: String): String {
-        if (rawHtml.isBlank()) return rawHtml
-
-        // ブロック要素として扱うタグ（ネスト対応版）
-        // 正規表現ではネストを完全に処理できないため、Jsoupを使用してブロック要素を検出
-        val blockTags = setOf(
-            "blockquote", "details", "figure", "div", "ul", "ol", "li",
-            "dl", "dt", "dd", "pre", "table", "thead", "tbody", "tr", "td", "th",
-            "h1", "h2", "h3", "h4", "h5", "h6", "p", "hr"
-        )
-
-        // テキストとブロック要素に分割（Jsoupで安全にパース）
-        val parts = mutableListOf<Pair<Boolean, String>>() // (isBlock, content)
-        try {
-            val doc = org.jsoup.Jsoup.parseBodyFragment(rawHtml)
-            val body = doc.body()
-
-            body.childNodes().forEach { node ->
-                when (node) {
-                    is org.jsoup.nodes.Element -> {
-                        val isBlock = node.tagName().lowercase() in blockTags
-                        parts += isBlock to node.outerHtml()
-                    }
-                    is org.jsoup.nodes.TextNode -> {
-                        val text = node.wholeText
-                        if (text.isNotBlank()) {
-                            parts += false to text
-                        }
-                    }
-                    else -> {
-                        parts += false to node.outerHtml()
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            // パース失敗時は元のHTMLをそのまま返す
-            Log.w(TAG, "Failed to parse HTML for formatting", e)
-            return rawHtml
-        }
-
-        // パーツが空の場合は元のHTMLを返す
-        if (parts.isEmpty()) return rawHtml
-
-        fun isLongQuote(html: String): Boolean {
-            val text = html.replace(Regex("(?is)<.*?>"), "")
-            val brCount = Regex("(?i)<br\\s*/?>").findAll(html).count()
-            return text.length >= 400 || brCount >= 6
-        }
-        fun wrapLongQuoteIfNeeded(html: String): String {
-            return if (Regex("(?is)^\\s*<blockquote\\b").containsMatchIn(html) && isLongQuote(html)) {
-                """<details class="long-quote"><summary>長文の引用を開く</summary>$html</details>"""
-            } else html
-        }
-
-        // テキスト → 段落整形
-        fun textToParagraphs(t: String): String {
-            if (t.isBlank()) return ""
-            var s = t.replace("\r\n", "\n")
-
-            // 連続 <br> を段落デリミタへ正規化（後で split する）
-            s = s.replace(Regex("(?i)(?:\\s*<br\\s*/?>\\s*){2,}"), "\n\n")
-
-            // 空行（\n\n+）で段落分割
-            val chunks = s.trim().split(Regex("\\n{2,}"))
-                .map { it.trim() }
-                .filter { it.isNotEmpty() }
-
-            // 各段落内の単独改行のみ <br> に置換して <p> で包む
-            return chunks.joinToString(separator = "") { para ->
-                val inner = para.replace(Regex("\\n"), "<br>")
-                "<p>$inner</p>"
-            }
-        }
-
-        // 再構築
-        val out = StringBuilder()
-        for ((isBlock, content) in parts) {
-            if (isBlock) {
-                out.append(wrapLongQuoteIfNeeded(content))
-            } else {
-                out.append(textToParagraphs(content))
-            }
-        }
-        return out.toString()
-    }
+    private fun formatParagraphsAndQuotes(rawHtml: String): String =
+        ThreadArchiverSupport.formatParagraphsAndQuotes(rawHtml)
 
     /**
      * HTMLで参照するローカルファイルの相対パスを解決する。
@@ -815,124 +732,29 @@ class ThreadArchiver(
         return generateFileName(mediaItem.url, mediaItem.type)
     }
 
-    /**
-     * サブディレクトリとファイル名からアーカイブ内の相対パスを組み立てる。
-     */
-    private fun buildRelativePath(subDirectory: String, fileName: String): String {
-        return if (subDirectory.isBlank()) fileName else "$subDirectory/$fileName"
-    }
+    private fun buildRelativePath(subDirectory: String, fileName: String): String =
+        ThreadArchiverSupport.buildRelativePath(subDirectory, fileName)
 
-    /**
-     * ファイル名をサニタイズ
-     */
-    private fun sanitizeFileName(name: String): String {
-        return name.replace(Regex("[\\\\/:*?\"<>|]"), "_")
-    }
+    private fun sanitizeFileName(name: String): String =
+        ThreadArchiverSupport.sanitizeFileName(name)
 
-    /**
-     * URLからディレクトリ名を生成
-     * 例: https://img.2chan.net/b/res/1234567890.htm -> b_1234567890_20250131_123456
-     */
-    private fun generateDirectoryNameFromUrl(url: String, timestamp: String): String {
-        return try {
-            val urlObj = URL(url)
-            val pathParts = urlObj.path.split("/").filter { it.isNotBlank() }
+    private fun generateDirectoryNameFromUrl(url: String, timestamp: String): String =
+        ThreadArchiverSupport.generateDirectoryNameFromUrl(url, timestamp)
 
-            // パスから板名とスレッドIDを抽出
-            // 例: /b/res/1234567890.htm -> [b, res, 1234567890.htm]
-            val boardName = if (pathParts.isNotEmpty()) pathParts[0] else "unknown"
-            val threadId = if (pathParts.size >= 3) {
-                // 1234567890.htm から拡張子を除去して 1234567890 を取得
-                pathParts[2].substringBeforeLast('.')
-            } else {
-                // スレッドIDが取得できない場合はURLのハッシュ値を使用
-                url.hashCode().toString(16)
-            }
+    private fun generateFileName(url: String, type: MediaType): String =
+        ThreadArchiverSupport.generateFileName(
+            url,
+            fallbackExtension = when (type) { MediaType.IMAGE -> "jpg"; MediaType.VIDEO -> "mp4" }
+        )
 
-            "${boardName}_${threadId}_${timestamp}"
-        } catch (e: Exception) {
-            // URLのパースに失敗した場合はURLのハッシュ値とタイムスタンプを使用
-            Log.w(TAG, "Failed to parse URL for directory name: $url", e)
-            "thread_${url.hashCode().toString(16)}_${timestamp}"
-        }
-    }
+    private fun escapeHtml(text: String): String =
+        ThreadArchiverSupport.escapeHtml(text)
 
-    /**
-     * URLからファイル名を生成
-     */
-    private fun generateFileName(url: String, type: MediaType): String {
-        return try {
-            val urlObj = URL(url)
-            val path = urlObj.path
-            val fileName = path.substringAfterLast('/')
-
-            if (fileName.isNotBlank() && fileName.contains('.')) {
-                sanitizeFileName(fileName)
-            } else {
-                // ファイル名が取得できない場合はハッシュとタイプから生成
-                val hash = url.hashCode().toString(16)
-                val extension = when (type) {
-                    MediaType.IMAGE -> "jpg"
-                    MediaType.VIDEO -> "mp4"
-                }
-                "${hash}.${extension}"
-            }
-        } catch (e: Exception) {
-            // URLのパースに失敗した場合
-            val hash = url.hashCode().toString(16)
-            val extension = when (type) {
-                MediaType.IMAGE -> "jpg"
-                MediaType.VIDEO -> "mp4"
-            }
-            "${hash}.${extension}"
-        }
-    }
-
-    /**
-     * HTML特殊文字をエスケープ
-     */
-    private fun escapeHtml(text: String): String {
-        return text
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace("\"", "&quot;")
-            .replace("'", "&#39;")
-    }
-
-    /**
-     * HTMLコンテンツ内のリモートリンクをローカルパスに置き換える
-     */
     private fun replaceLinksWithLocalPaths(
         htmlContent: String,
         downloadedFiles: Map<String, String>,
-        archiveDir: File
-    ): String {
-        var result = htmlContent
-
-        // downloadedFilesのキー（元URL）から置き換えマップを作成
-        downloadedFiles.forEach { (originalUrl, localPath) ->
-            try {
-                val url = URL(originalUrl)
-                val path = url.path // 例: "/b/src/1761893219711.png"
-
-                // HTMLコンテンツ内でこのパスを参照している箇所を置き換え
-                // href="/b/src/1761893219711.png" -> href="images/1761893219711.png"
-                // src="/b/src/1761893219711.png" -> src="images/1761893219711.png"
-                result = result.replace("href=\"$path\"", "href=\"$localPath\"")
-                result = result.replace("src=\"$path\"", "src=\"$localPath\"")
-                result = result.replace("href='$path'", "href='$localPath'")
-                result = result.replace("src='$path'", "src='$localPath'")
-
-                Log.d(TAG, "Replaced link in HTML: $path -> $localPath")
-            } catch (e: Exception) {
-                // URLのパースに失敗した場合はスキップ
-                Log.w(TAG, "Failed to parse URL for link replacement: $originalUrl", e)
-            }
-        }
-
-        return result
-    }
+        @Suppress("UNUSED_PARAMETER") archiveDir: File
+    ): String = ThreadArchiverSupport.replaceLinksWithLocalPaths(htmlContent, downloadedFiles)
 
     /**
      * メディアアイテム

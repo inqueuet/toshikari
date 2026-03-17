@@ -11,11 +11,11 @@ import com.google.gson.stream.JsonReader
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.io.InputStreamReader
-import java.security.MessageDigest
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.valoser.toshikari.StringHashSupport
 import com.valoser.toshikari.UrlNormalizer
 
 /**
@@ -67,17 +67,12 @@ class DetailCacheManager @Inject constructor(
      * 詳細リストのチェックサムを計算する（差分更新用）
      */
     private fun calculateChecksum(details: List<DetailContent>): String {
-        // より効率的なハッシュ計算（メモリ使用量とGC負荷を削減）
-        val digest = MessageDigest.getInstance("MD5")
-
-        // StringBuilder使用でメモリ確保回数を削減
         val content = StringBuilder()
         details.forEachIndexed { index, detail ->
             if (index > 0) content.append("|")
             content.append(detail.id).append(":").append(detail.hashCode())
         }
-
-        return digest.digest(content.toString().toByteArray()).joinToString("") { "%02x".format(it) }
+        return StringHashSupport.md5(content.toString())
     }
 
     /**
@@ -610,11 +605,5 @@ class DetailCacheManager @Inject constructor(
     }
 
 
-    /** 文字列の SHA-256 ハッシュ（小文字16進）を返す。 */
-    private fun String.sha256(): String {
-        return java.security.MessageDigest
-            .getInstance("SHA-256")
-            .digest(toByteArray())
-            .fold("") { str, it -> str + "%02x".format(it) }
-    }
+    private fun String.sha256(): String = StringHashSupport.sha256(this)
 }
