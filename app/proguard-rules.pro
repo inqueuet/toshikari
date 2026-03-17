@@ -33,6 +33,9 @@
 # Kotlin関連
 -dontwarn kotlin.**
 
+# jsoup optional re2j dependency (not included in project)
+-dontwarn com.google.re2j.**
+
 # Release builds should not emit verbose/debug/info logs from our code.
 # R8 strips these calls so that only warnings/errors remain and logcat stays clean.
 -assumenosideeffects class android.util.Log {
