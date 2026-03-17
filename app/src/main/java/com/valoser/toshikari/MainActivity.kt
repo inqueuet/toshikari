@@ -274,7 +274,6 @@ class MainActivity : BaseActivity() {
                         },
                         onOpenSettings = { startActivity(Intent(this@MainActivity, SettingsActivity::class.java)) },
                         onOpenHistory = { startActivity(Intent(this@MainActivity, HistoryActivity::class.java)) },
-                        onOpenPastSearch = { openPastSearch() },
                         onImageEdit = { startActivity(Intent(this@MainActivity, ImagePickerActivity::class.java)) },
                         onVideoEdit = { startActivity(Intent(this@MainActivity, com.valoser.toshikari.videoeditor.presentation.ui.EditorActivity::class.java)) },
                         onBrowseLocalImages = { pickImageLauncher.launch("image/*") },

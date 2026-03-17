@@ -263,7 +263,7 @@ class MyApplication : Application(), Configuration.Provider, SingletonImageLoade
             // メモリ/ディスクキャッシュを明示設定（ディスクキャッシュを優先、メモリ使用量を抑制）
             .memoryCache(
                 MemoryCache.Builder()
-                    .maxSizePercent(context, 0.10) // メモリの10%までに抑えつつ、ヒット率を確保
+                    .maxSizePercent(context, 0.20) // メモリの20%を使用しキャッシュヒット率を向上
                     .strongReferencesEnabled(true) // プリフェッチ結果を強参照で保持して再デコードを抑止
                     .build()
             )

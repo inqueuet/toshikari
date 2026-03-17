@@ -29,6 +29,8 @@ import coil3.request.Disposable
 import coil3.request.ImageRequest
 import coil3.size.Dimension
 import coil3.size.Precision
+import coil3.size.Size
+import com.valoser.toshikari.image.ImageKeys
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -96,7 +98,7 @@ class MainViewModel @Inject constructor(
         private const val PREVIEW_BATCH_DELAY_MS = 5L
         private const val FULL_BATCH_DELAY_MS = 50L
         // カタログ1回あたりのフル画像プリフェッチ対象件数上限
-        private const val FULL_PREFETCH_LIMIT = 12
+        private const val FULL_PREFETCH_LIMIT = 20
     }
     private val threadWatchStore by lazy { ThreadWatchStore(appContext) }
 
@@ -118,6 +120,22 @@ class MainViewModel @Inject constructor(
 
     // 同一 detailUrl のフルプリフェッチを重複させないためのガードセット
     private val inFlightFullPrefetch = ConcurrentHashMap.newKeySet<String>()
+
+    // プリフェッチ用 NetworkHeaders キャッシュ（Referer をキーにオブジェクト再利用）
+    private val prefetchHeadersCache = android.util.LruCache<String, NetworkHeaders>(100)
+
+    private fun createPrefetchHeaders(referer: String): NetworkHeaders {
+        return prefetchHeadersCache.get(referer) ?: run {
+            val headers = NetworkHeaders.Builder()
+                .add("Referer", referer)
+                .add("Accept", "*/*")
+                .add("Accept-Language", "ja,en-US;q=0.9,en;q=0.8")
+                .add("User-Agent", Ua.STRING)
+                .build()
+            prefetchHeadersCache.put(referer, headers)
+            headers
+        }
+    }
 
     // 差分更新向け: detailUrl をキーにした順序付きマップで保持
     // 動的サイズ制限付きLinkedHashMapでメモリ使用量を制御
@@ -222,14 +240,7 @@ class MainViewModel @Inject constructor(
                         .data(url)
                         .size(Dimension.Pixels(width), Dimension.Pixels(height))
                         .precision(Precision.INEXACT)
-                        .httpHeaders(
-                            NetworkHeaders.Builder()
-                                .add("Referer", referer)
-                                .add("Accept", "*/*")
-                                .add("Accept-Language", "ja,en-US;q=0.9,en;q=0.8")
-                                .add("User-Agent", Ua.STRING)
-                                .build()
-                        )
+                        .httpHeaders(createPrefetchHeaders(referer))
                         .build()
                     val disposable = imageLoader.enqueue(request)
                     activeDisposables += PrefetchHandle(detailUrl = null, disposable = disposable)
@@ -262,16 +273,10 @@ class MainViewModel @Inject constructor(
                     }
                     val request = ImageRequest.Builder(appContext)
                         .data(url)
-                        .size(Dimension.Pixels(width), Dimension.Pixels(height))
+                        .memoryCacheKey(ImageKeys.full(url))
+                        .size(Size.ORIGINAL)
                         .precision(Precision.INEXACT)
-                        .httpHeaders(
-                            NetworkHeaders.Builder()
-                                .add("Referer", referer)
-                                .add("Accept", "*/*")
-                                .add("Accept-Language", "ja,en-US;q=0.9,en;q=0.8")
-                                .add("User-Agent", Ua.STRING)
-                                .build()
-                        )
+                        .httpHeaders(createPrefetchHeaders(referer))
                         .listener(
                             onSuccess = { request, _ ->
                                 inFlightFullPrefetch.remove(item.detailUrl)

@@ -86,6 +86,7 @@ import coil3.size.Precision
 import coil3.transition.CrossfadeTransition
 import com.valoser.toshikari.ImageItem
 import com.valoser.toshikari.MatchType
+import com.valoser.toshikari.image.ImageKeys
 import com.valoser.toshikari.NgRule
 import com.valoser.toshikari.SafeRegex
 import com.valoser.toshikari.Ua
@@ -272,7 +273,6 @@ internal fun MoreMenu(
     onManageBookmarks: () -> Unit,
     onSelectSortMode: () -> Unit,
     onOpenHistory: () -> Unit,
-    onOpenPastSearch: () -> Unit,
     onOpenSettings: () -> Unit,
     onImageEdit: () -> Unit,
     onVideoEdit: () -> Unit,
@@ -306,12 +306,6 @@ internal fun MoreMenu(
                 text = { Text("履歴") },
                 leadingIcon = { Icon(Icons.Rounded.History, contentDescription = "履歴") },
                 onClick = { expanded = false; onOpenHistory() }
-            )
-            DropdownMenuItem(
-                text = { Text("過去スレ検索") },
-                leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = "過去スレ検索") },
-                onClick = { expanded = false; onOpenPastSearch() },
-                enabled = hasSelectedBookmark
             )
 
             HorizontalDivider()
@@ -399,6 +393,7 @@ internal fun CatalogListItem(
                         modifier = Modifier.fillMaxSize(),
                         model = ImageRequest.Builder(LocalContext.current)
                             .data(displayUrl)
+                            .memoryCacheKey(ImageKeys.full(displayUrl))
                             .httpHeaders(
                                 NetworkHeaders.Builder()
                                     .add("Referer", item.detailUrl)
@@ -557,6 +552,7 @@ internal fun CatalogCard(
                             modifier = Modifier.fillMaxSize(),
                             model = ImageRequest.Builder(LocalContext.current)
                                 .data(displayUrl)
+                                .memoryCacheKey(ImageKeys.full(displayUrl))
                                 .size(Dimension.Pixels(widthPx.toInt()), Dimension.Pixels(heightPx.toInt()))
                                 .precision(Precision.INEXACT)
                                 // 画像（プレビュー⇄フル）切替時のフラッシュ感を抑える
@@ -601,6 +597,7 @@ internal fun CatalogCard(
                                         modifier = Modifier.fillMaxSize(),
                                         model = ImageRequest.Builder(LocalContext.current)
                                             .data(item.previewUrl)
+                                            .memoryCacheKey(ImageKeys.full(item.previewUrl))
                                             .size(Dimension.Pixels(widthPx.toInt()), Dimension.Pixels(heightPx.toInt()))
                                             .precision(Precision.EXACT)
                                             // フォールバック時もクロスフェードで切替を穏やかに

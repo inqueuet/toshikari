@@ -115,7 +115,6 @@ import com.valoser.toshikari.ui.common.AppBarPosition
  * - `onManageBookmarks`: ブックマーク管理画面を開くアクション（メニューから呼び出し）。
  * - `onOpenSettings`: 設定画面を開くアクション（メニューから呼び出し）。
  * - `onOpenHistory`: 履歴画面を開くアクション（メニューから呼び出し）。
- * - `onOpenPastSearch`: 過去スレ検索画面を開くアクション（メニューから呼び出し）。
  * - `onImageEdit`/`onBrowseLocalImages`: 画像編集／ローカル画像のメニュー操作。
  * - `onVideoEdit`: 動画編集のメニュー操作。
  * - `promptFeaturesEnabled`: プロンプト機能が有効な場合に追加メニューを表示するフラグ。
@@ -149,7 +148,6 @@ fun MainCatalogScreen(
     onManageBookmarks: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenHistory: () -> Unit,
-    onOpenPastSearch: () -> Unit,
     onImageEdit: () -> Unit,
     onVideoEdit: () -> Unit,
     onBrowseLocalImages: () -> Unit,
@@ -226,8 +224,8 @@ fun MainCatalogScreen(
 
                 val contentWidthPx = (viewportWidthPx - (sPx * 2)).coerceAtLeast(0f)
                 val cellWidthPx = if (isListMode) {
-                    // リスト表示: サムネイル幅は約120dp相当の固定値を px 換算して利用
-                    120.dp.value * 3f // 適切なdp値を使用
+                    // リスト表示: サムネイル幅は約120dp相当を density 適用で px 換算
+                    with(density) { 120.dp.toPx() }
                 } else {
                     ((contentWidthPx / spanCount) - (xsPx * 2)).coerceAtLeast(64f)
                 }
@@ -366,7 +364,6 @@ fun MainCatalogScreen(
                     onManageBookmarks = onManageBookmarks,
                     onSelectSortMode = onSelectSortMode,
                     onOpenHistory = onOpenHistory,
-                    onOpenPastSearch = onOpenPastSearch,
                     onOpenSettings = onOpenSettings,
                     onImageEdit = onImageEdit,
                     onVideoEdit = onVideoEdit,
