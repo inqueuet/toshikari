@@ -11,8 +11,8 @@
  */
 package com.valoser.toshikari.ui.detail
 
-import android.text.Html
 import com.valoser.toshikari.DetailContent
+import com.valoser.toshikari.DetailPlainTextFormatter
 
 /**
  * 指定した ID に紐づく投稿群を抽出して並べ替えるヘルパー。
@@ -27,13 +27,13 @@ import com.valoser.toshikari.DetailContent
  *
  * 注意:
  * - HTML のプレーンテキスト化は `plainTextOf` デリゲートで行い、デフォルトでは
- *   `Html.fromHtml(..., Html.FROM_HTML_MODE_COMPACT)` を用いる。
+ *   `DetailPlainTextFormatter` を用いる。
  */
 // Build list: same-ID posts (Text + immediate following media until next Text/End)
 internal fun buildIdPostsItems(
     all: List<DetailContent>,
     id: String,
-    plainTextOf: (DetailContent.Text) -> String = { t -> Html.fromHtml(t.htmlContent, Html.FROM_HTML_MODE_COMPACT).toString() },
+    plainTextOf: (DetailContent.Text) -> String = DetailPlainTextFormatter::fromText,
 ): List<DetailContent> {
     // 対象IDを含むテキスト要素のインデックスを抽出
     val textIndexes = all.withIndex().filter { (_, c) ->
@@ -42,36 +42,11 @@ internal fun buildIdPostsItems(
     }.map { it.index }
     if (textIndexes.isEmpty()) return emptyList()
 
-    val groups = mutableListOf<List<DetailContent>>()
-    for (i in textIndexes) {
-        val group = mutableListOf<DetailContent>()
-        // 起点テキストを追加し、直後に続くメディアを収集
-        group += all[i]
-        var j = i + 1
-        while (j < all.size) {
-            when (val c = all[j]) {
-                is DetailContent.Image, is DetailContent.Video -> { group += c; j++ }
-                // 次のテキスト or スレ終端が来たら1グループ終了
-                is DetailContent.Text, is DetailContent.ThreadEndTime -> break
-            }
-        }
-        groups += group
-    }
+    val groups = DetailContentGroupSupport.collectGroupsAt(all, textIndexes)
     // 先頭要素の id で重複排除し、投稿番号（No.xxx）が取れる場合はその数値で昇順ソート
     val ordered = groups
         .distinctBy { it.firstOrNull()?.id }
-        .sortedWith(compareBy<List<DetailContent>> { grp ->
-            val head = grp.firstOrNull()
-            when (head) {
-                null -> Int.MAX_VALUE
-                is DetailContent.Text -> {
-                    val plain = plainTextOf(head)
-                    Regex("""No\.(\n|\r|.)*?(\d+)""")
-                        .find(plain)?.groupValues?.lastOrNull()?.toIntOrNull() ?: Int.MAX_VALUE
-                }
-                else -> Int.MAX_VALUE
-            }
-        })
+        .let { DetailContentResOrderSupport.sortGroupsByResNumber(it, plainTextOf) }
         .flatten()
     return ordered
 }

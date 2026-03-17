@@ -1,8 +1,7 @@
 package com.valoser.toshikari.ui.detail
 
-import android.text.Html
 import com.valoser.toshikari.DetailContent
-import java.text.Normalizer
+import com.valoser.toshikari.DetailPlainTextFormatter
 
 /**
  * 引用/参照の集計ヘルパ関数群。
@@ -27,18 +26,13 @@ import java.text.Normalizer
 internal fun buildResReferencesItems(
     all: List<DetailContent>,
     resNum: String,
-    plainTextOf: (DetailContent.Text) -> String = { t -> android.text.Html.fromHtml(t.htmlContent, android.text.Html.FROM_HTML_MODE_COMPACT).toString() },
+    plainTextOf: (DetailContent.Text) -> String = DetailPlainTextFormatter::fromText,
 ): List<DetailContent> {
     if (resNum.isBlank()) return emptyList()
     val esc = Regex.escape(resNum)
 
     fun plainOf(t: DetailContent.Text): String =
-        plainTextOf(t)
-            .replace("\u200B", "")
-            .replace('　', ' ')
-            .replace('＞', '>')
-            .replace('≫', '>')
-            .let { Normalizer.normalize(it, Normalizer.Form.NFKC) }
+        DetailTextNormalizer.normalizePlain(plainTextOf(t))
 
     val textPatterns = listOf(
         Regex("""\bNo\.?\s*$esc\b""", RegexOption.IGNORE_CASE),
@@ -53,27 +47,7 @@ internal fun buildResReferencesItems(
 
     if (hitIndexes.isEmpty()) return emptyList()
 
-    val groups = mutableListOf<List<DetailContent>>()
-    for (i in hitIndexes) {
-        val group = mutableListOf<DetailContent>()
-        group += all[i]
-        var j = i + 1
-        while (j < all.size) {
-            when (val c = all[j]) {
-                is DetailContent.Image, is DetailContent.Video -> { group += c; j++ }
-                is DetailContent.Text, is DetailContent.ThreadEndTime -> break
-            }
-        }
-        groups += group
-    }
-
-    fun extractResNo(c: DetailContent): Int? = when (c) {
-        is DetailContent.Text -> {
-            val plain = plainTextOf(c)
-            Regex("""No\.(\d+)""").find(plain)?.groupValues?.getOrNull(1)?.toIntOrNull()
-        }
-        else -> null
-    }
+    val groups = DetailContentGroupSupport.collectGroupsAt(all, hitIndexes)
 
     // 元のNo.の投稿も含めるため、該当する投稿を検索
     val originalPost = all.find { content ->
@@ -86,16 +60,7 @@ internal fun buildResReferencesItems(
     if (originalPost != null) {
         val originalIndex = all.indexOf(originalPost)
         if (originalIndex >= 0) {
-            val originalGroup = mutableListOf<DetailContent>()
-            originalGroup += all[originalIndex]
-            var j = originalIndex + 1
-            while (j < all.size) {
-                when (val c = all[j]) {
-                    is DetailContent.Image, is DetailContent.Video -> { originalGroup += c; j++ }
-                    is DetailContent.Text, is DetailContent.ThreadEndTime -> break
-                }
-            }
-            allResults += originalGroup
+            allResults += DetailContentGroupSupport.collectGroupAt(all, originalIndex)
         }
     }
 
@@ -104,7 +69,7 @@ internal fun buildResReferencesItems(
 
     return allResults
         .distinctBy { it.firstOrNull()?.id }
-        .sortedWith(compareBy<List<DetailContent>> { grp -> extractResNo(grp.firstOrNull() ?: return@compareBy Int.MAX_VALUE) ?: Int.MAX_VALUE })
+        .let { DetailContentResOrderSupport.sortGroupsByResNumber(it, plainTextOf) }
         .flatten()
 }
 
@@ -120,22 +85,17 @@ internal fun buildBackReferencesByContent(
     all: List<DetailContent>,
     source: DetailContent.Text,
     extraCandidates: Set<String> = emptySet(),
-    plainTextOf: (DetailContent.Text) -> String = { t -> android.text.Html.fromHtml(t.htmlContent, android.text.Html.FROM_HTML_MODE_COMPACT).toString() },
+    plainTextOf: (DetailContent.Text) -> String = DetailPlainTextFormatter::fromText,
 ): List<DetailContent> {
-    fun normalize(s: String): String = Normalizer.normalize(
-        s.replace("\u200B", "").replace('　', ' ').replace('＞', '>').replace('≫', '>'),
-        Normalizer.Form.NFKC
-    ).replace(Regex("\\s+"), " ").trim()
-
     // ソース本文から候補行を抽出（空でない/ヘッダ風でない/長さ>=2）
     val srcPlain = plainTextOf(source)
     val candidates: Set<String> = srcPlain.lines()
-        .map { normalize(it) }
+        .map(DetailTextNormalizer::normalizeCollapsed)
         .filter { it.isNotBlank() && !it.startsWith("No.", ignoreCase = true) && !it.startsWith("ID:", ignoreCase = true) && it.length >= 2 }
         .toSet()
         .let {
             if (extraCandidates.isEmpty()) it
-            else it + extraCandidates.map { s -> normalize(s) }
+            else it + extraCandidates.map(DetailTextNormalizer::normalizeCollapsed)
         }
     if (candidates.isEmpty()) return emptyList()
 
@@ -146,14 +106,14 @@ internal fun buildBackReferencesByContent(
         val plain = plainTextOf(c)
         val quoteLines = plain.lines()
             .filter { it.trim().startsWith(">") }
-            .map { normalize(it.trim().replaceFirst(Regex("^>+"), "")) }
+            .map { DetailTextNormalizer.normalizeCollapsed(it.trim().replaceFirst(Regex("^>+"), "")) }
             .filter { it.isNotBlank() }
             .toSet()
         if (quoteLines.any { it in candidates }) return@filter true
 
         // extraCandidates がある場合は、プレーン本文行での完全一致も許容
         if (extraCandidates.isNotEmpty()) {
-            val plainLines = plain.lines().map { normalize(it) }.filter { it.isNotBlank() }
+            val plainLines = plain.lines().map(DetailTextNormalizer::normalizeCollapsed).filter { it.isNotBlank() }
             if (plainLines.any { it in candidates }) {
                 return@filter true
             }
@@ -164,31 +124,11 @@ internal fun buildBackReferencesByContent(
 
     if (hitIndexes.isEmpty()) return emptyList()
 
-    val groups = mutableListOf<List<DetailContent>>()
-    for (i in hitIndexes) {
-        val group = mutableListOf<DetailContent>()
-        group += all[i]
-        var j = i + 1
-        while (j < all.size) {
-            when (val c = all[j]) {
-                is DetailContent.Image, is DetailContent.Video -> { group += c; j++ }
-                is DetailContent.Text, is DetailContent.ThreadEndTime -> break
-            }
-        }
-        groups += group
-    }
-
-    fun extractResNo(c: DetailContent): Int? = when (c) {
-        is DetailContent.Text -> {
-            val plain = plainTextOf(c)
-            Regex("""No\.(\d+)""").find(plain)?.groupValues?.getOrNull(1)?.toIntOrNull()
-        }
-        else -> null
-    }
+    val groups = DetailContentGroupSupport.collectGroupsAt(all, hitIndexes)
 
     return groups
         .distinctBy { it.firstOrNull()?.id }
-        .sortedWith(compareBy<List<DetailContent>> { grp -> extractResNo(grp.firstOrNull() ?: return@compareBy Int.MAX_VALUE) ?: Int.MAX_VALUE })
+        .let { DetailContentResOrderSupport.sortGroupsByResNumber(it, plainTextOf) }
         .flatten()
 }
 
@@ -201,47 +141,19 @@ internal fun buildSelfAndBackrefItems(
     all: List<DetailContent>,
     source: DetailContent.Text,
     extraCandidates: Set<String> = emptySet(),
-    plainTextOf: (DetailContent.Text) -> String = { t -> android.text.Html.fromHtml(t.htmlContent, android.text.Html.FROM_HTML_MODE_COMPACT).toString() },
+    plainTextOf: (DetailContent.Text) -> String = DetailPlainTextFormatter::fromText,
 ): List<DetailContent> {
     // Build group for the source itself
     val srcIndex = all.indexOfFirst { it.id == source.id }
     if (srcIndex < 0) return emptyList()
     val groups = mutableListOf<List<DetailContent>>()
-    run {
-        val g = mutableListOf<DetailContent>()
-        g += all[srcIndex]
-        var j = srcIndex + 1
-        while (j < all.size) {
-            when (val c = all[j]) {
-                is DetailContent.Image, is DetailContent.Video -> { g += c; j++ }
-                is DetailContent.Text, is DetailContent.ThreadEndTime -> break
-            }
-        }
-        groups += g
-    }
+    groups += DetailContentGroupSupport.collectGroupAt(all, srcIndex)
     // 被引用のグループを後ろに連結
     val back = buildBackReferencesByContent(all, source, extraCandidates = extraCandidates, plainTextOf = plainTextOf)
     if (back.isNotEmpty()) {
-        var k = 0
-        while (k < back.size) {
-            val first = back[k]
-            val g = mutableListOf<DetailContent>()
-            g += first
-            k++
-            while (k < back.size && back[k] !is DetailContent.Text) {
-                g += back[k]
-                k++
-            }
-            groups += g
-        }
+        groups += DetailContentGroupSupport.regroupFlatItems(back)
     }
-    // 先頭 id でグループ重複を除去し、要素単位でも id で一意化しつつフラット化
-    val uniqueGroups = groups.distinctBy { it.firstOrNull()?.id }
-    val flat = uniqueGroups.flatten()
-    val seen = HashSet<String>()
-    val out = ArrayList<DetailContent>(flat.size)
-    for (c in flat) if (seen.add(c.id)) out += c
-    return out
+    return DetailContentGroupSupport.flattenDistinctGroups(groups)
 }
 
 /**
@@ -252,18 +164,13 @@ internal fun buildSelfAndBackrefItems(
 internal fun buildTextSearchItems(
     all: List<DetailContent>,
     query: String,
-    plainTextOf: (DetailContent.Text) -> String = { t -> android.text.Html.fromHtml(t.htmlContent, android.text.Html.FROM_HTML_MODE_COMPACT).toString() },
+    plainTextOf: (DetailContent.Text) -> String = DetailPlainTextFormatter::fromText,
 ): List<DetailContent> {
     val q = query.trim()
     if (q.isEmpty()) return emptyList()
 
     fun plainOf(t: DetailContent.Text): String =
-        plainTextOf(t)
-            .replace("\u200B", "")
-            .replace('　', ' ')
-            .replace('＞', '>')
-            .replace('≫', '>')
-            .let { java.text.Normalizer.normalize(it, java.text.Normalizer.Form.NFKC) }
+        DetailTextNormalizer.normalizePlain(plainTextOf(t))
 
     val hitIndexes = all.withIndex().filter { (_, c) ->
         c is DetailContent.Text && plainOf(c).contains(q, ignoreCase = true)
@@ -271,32 +178,11 @@ internal fun buildTextSearchItems(
 
     if (hitIndexes.isEmpty()) return emptyList()
 
-    val groups = mutableListOf<List<DetailContent>>()
-    for (i in hitIndexes) {
-        val group = mutableListOf<DetailContent>()
-        group += all[i]
-        var j = i + 1
-        while (j < all.size) {
-            when (val c = all[j]) {
-                is DetailContent.Image, is DetailContent.Video -> { group += c; j++ }
-                is DetailContent.Text, is DetailContent.ThreadEndTime -> break
-            }
-        }
-        groups += group
-    }
-
-    fun extractResNo(c: DetailContent): Int? = when (c) {
-        is DetailContent.Text -> {
-            val plain = plainTextOf(c)
-            Regex("""(?i)(?:No|Ｎｏ)[\.\uFF0E]?\s*(\d+)""")
-                .find(plain)?.groupValues?.getOrNull(1)?.toIntOrNull()
-        }
-        else -> null
-    }
+    val groups = DetailContentGroupSupport.collectGroupsAt(all, hitIndexes)
 
     return groups
         .distinctBy { it.firstOrNull()?.id }
-        .sortedWith(compareBy<List<DetailContent>> { grp -> extractResNo(grp.firstOrNull() ?: return@compareBy Int.MAX_VALUE) ?: Int.MAX_VALUE })
+        .let { DetailContentResOrderSupport.sortGroupsByResNumber(it, plainTextOf) }
         .flatten()
 }
 
@@ -314,15 +200,12 @@ internal fun buildTextSearchItems(
 internal fun buildFilenameReferencesItems(
     all: List<DetailContent>,
     fileName: String,
-    plainTextOf: (DetailContent.Text) -> String = { t -> android.text.Html.fromHtml(t.htmlContent, android.text.Html.FROM_HTML_MODE_COMPACT).toString() },
+    plainTextOf: (DetailContent.Text) -> String = DetailPlainTextFormatter::fromText,
 ): List<DetailContent> {
     val needle = fileName.trim()
     if (needle.isEmpty()) return emptyList()
 
-    fun normalize(s: String): String = java.text.Normalizer.normalize(
-        s.replace("\u200B", "").replace('　', ' ').replace('＞', '>').replace('≫', '>'),
-        java.text.Normalizer.Form.NFKC
-    ).trim()
+    fun normalize(s: String): String = DetailTextNormalizer.normalizeTrimmed(s)
 
     fun plainOf(t: DetailContent.Text): String = plainTextOf(t)
 
@@ -377,31 +260,10 @@ internal fun buildFilenameReferencesItems(
     if (allTextIdx.isEmpty()) return emptyList()
 
     // Build groups from each text index
-    val groups = mutableListOf<List<DetailContent>>()
-    for (i in allTextIdx) {
-        val group = mutableListOf<DetailContent>()
-        group += all[i]
-        var j = i + 1
-        while (j < all.size) {
-            when (val c = all[j]) {
-                is DetailContent.Image, is DetailContent.Video -> { group += c; j++ }
-                is DetailContent.Text, is DetailContent.ThreadEndTime -> break
-            }
-        }
-        groups += group
-    }
-
-    fun extractResNo(c: DetailContent): Int? = when (c) {
-        is DetailContent.Text -> {
-            val plain = plainTextOf(c)
-            Regex("""(?i)(?:No|Ｎｏ)[\.\uFF0E]?\s*(\d+)""")
-                .find(plain)?.groupValues?.getOrNull(1)?.toIntOrNull()
-        }
-        else -> null
-    }
+    val groups = DetailContentGroupSupport.collectGroupsAt(all, allTextIdx)
 
     return groups
         .distinctBy { it.firstOrNull()?.id }
-        .sortedWith(compareBy<List<DetailContent>> { grp -> extractResNo(grp.firstOrNull() ?: return@compareBy Int.MAX_VALUE) ?: Int.MAX_VALUE })
+        .let { DetailContentResOrderSupport.sortGroupsByResNumber(it, plainTextOf) }
         .flatten()
 }

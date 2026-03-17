@@ -9,7 +9,6 @@ import android.app.Activity
 import android.content.Intent
 import android.content.SharedPreferences
 import android.os.Bundle
-import android.text.Html
  
  
 import android.widget.Toast
@@ -154,20 +153,7 @@ class DetailActivity : BaseActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Compose のトップバーおよび履歴表示用のタイトル（HTML改行 <br> 等も考慮し、改行以降を除去して1行に）
-        toolbarTitleText = (intent.getStringExtra(EXTRA_TITLE) ?: "").let { raw ->
-            val plain = Html.fromHtml(raw, Html.FROM_HTML_MODE_COMPACT).toString()
-                .replace("\u200B", "") // ZWSP 除去
-            // 1) 改行優先
-            val cutByNewline = plain.substringBefore('\n').substringBefore('\r').trim()
-            if (cutByNewline.isNotBlank() && cutByNewline.length < plain.length) return@let cutByNewline
-            // 2) 改行が無い場合のヒューリスティック: 連続する空白（半角/全角）3つ以上で区切る
-            val m = Regex("[\\s\u3000]{3,}").find(plain)
-            if (m != null && m.range.first > 0) return@let plain.substring(0, m.range.first).trim()
-            // 3) スレ名ヒューリスティック: 「スレ」で切る（例: "キルヒアイスレ生き残…" → "キルヒアイスレ"）
-            val idxSre = plain.indexOf("スレ")
-            if (idxSre in 1 until plain.length) return@let plain.substring(0, idxSre + 2).trim()
-            plain.trim()
-        }
+        toolbarTitleText = DetailThreadTitleFormatter.format(intent.getStringExtra(EXTRA_TITLE) ?: "")
         currentUrl = intent.getStringExtra(EXTRA_URL)
         // スクロール位置の保存/復元に用いるストアを先に初期化（Compose へ初期状態を渡す）
         scrollStore = ScrollPositionStore(this)

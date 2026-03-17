@@ -2,7 +2,6 @@ package com.valoser.toshikari
 
 import android.content.Context
 import android.util.Log
-import androidx.core.text.HtmlCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
@@ -43,7 +42,6 @@ import kotlinx.coroutines.flow.update
 import javax.inject.Inject
 import com.valoser.toshikari.ui.detail.SearchState
 import androidx.collection.LruCache
-import java.text.Normalizer
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
@@ -139,7 +137,7 @@ class DetailViewModel @Inject constructor(
 
     private val downloadRequestIdGenerator = AtomicLong(0)
     private val pendingDownloadMutex = Mutex()
-    private val pendingDownloadRequests = mutableMapOf<Long, PendingDownloadRequest>()
+    private val pendingDownloadRequests = mutableMapOf<Long, DetailPendingDownloadRequest<MediaSaver.ExistingMedia>>()
 
     // ダウンロード進捗の更新専用ロック（ViewModelインスタンス全体のロックを避ける）
     private val downloadProgressMutex = Mutex()
@@ -468,34 +466,30 @@ class DetailViewModel @Inject constructor(
                 // 新しいコンテンツをパース
                 val newContentList = parseContentFromDocument(document, url)
 
-                // 現在の表示（生データ）のID集合と内容ハッシュ集合を作成し、重複チェックを強化
-                val currentIds = rawContent.map { it.id }.toSet()
-                val currentContentHashes = rawContent.map { contentHash(it) }.toSet()
+                val diff = DetailContentDiffer.diff(
+                    current = rawContent,
+                    parsed = newContentList,
+                    textBodyOf = ::extractPlainBodyOfTextContent
+                )
 
-                val newItems = newContentList.filter { item ->
-                    val itemId = item.id
-                    val itemContentHash = contentHash(item)
-
-                    // ID一致もしくは内容ハッシュ一致で既存判定（重複を防ぐ）
-                    itemId !in currentIds && itemContentHash !in currentContentHashes
+                if (diff.duplicateIds.isNotEmpty()) {
+                    Log.w("DetailViewModel", "checkForUpdates: Duplicate IDs found: ${diff.duplicateIds}")
+                }
+                if (diff.duplicateContentHashes.isNotEmpty()) {
+                    Log.w(
+                        "DetailViewModel",
+                        "checkForUpdates: Duplicate content found: ${diff.duplicateContentHashes.size} groups"
+                    )
                 }
 
-                // デバッグログ：IDの重複状況と内容重複を確認
-                val duplicateIds = newContentList.map { it.id }.groupBy { it }.filter { it.value.size > 1 }
-                val duplicateContent = newContentList.map { contentHash(it) }.groupBy { it }.filter { it.value.size > 1 }
+                Log.d(
+                    "DetailViewModel",
+                    "checkForUpdates: Current items=${rawContent.size}, New parsed=${newContentList.size}, New items=${diff.newItems.size}"
+                )
 
-                if (duplicateIds.isNotEmpty()) {
-                    Log.w("DetailViewModel", "checkForUpdates: Duplicate IDs found: ${duplicateIds.keys}")
-                }
-                if (duplicateContent.isNotEmpty()) {
-                    Log.w("DetailViewModel", "checkForUpdates: Duplicate content found: ${duplicateContent.size} groups")
-                }
-
-                Log.d("DetailViewModel", "checkForUpdates: Current items=${rawContent.size}, New parsed=${newContentList.size}, New items=${newItems.size}")
-
-                if (newItems.isNotEmpty()) {
+                if (diff.newItems.isNotEmpty()) {
                     // 生データを更新してキャッシュ保存、表示はNG適用後
-                    val sanitizedNewItems = sanitizePrompts(newItems)
+                    val sanitizedNewItems = sanitizePrompts(diff.newItems)
                     val updatedRaw = updateRawContent { it + sanitizedNewItems }
                     withContext(Dispatchers.IO) { cacheManager.saveDetails(url, updatedRaw) }
 
@@ -518,12 +512,7 @@ class DetailViewModel @Inject constructor(
     private suspend fun parseContentFromDocument(document: Document, url: String): List<DetailContent> =
         withContext(Dispatchers.Default) {
         val progressivelyLoadedContent = mutableListOf<DetailContent>()
-        val threadId = url.substringAfterLast('/').substringBefore(
-            ".htm",
-            missingDelimiterValue = url.substringAfterLast('/')
-        ).ifBlank {
-            url.hashCode().toUInt().toString(16)
-        }
+        val threadId = DetailHtmlParsingSupport.extractThreadId(url)
         // URL末尾を基準にスレIDを決定し、欠損時はURLハッシュで安定化
 
         val threadContainer = document.selectFirst("div.thre")
@@ -575,21 +564,12 @@ class DetailViewModel @Inject constructor(
                 }
             }
 
-            val resNum = if (isOp) {
-                threadId
-            } else {
-                NO_PATTERN.find(html)?.groupValues?.getOrNull(2)
-                    ?: NO_PATTERN_FALLBACK.find(html)?.groupValues?.getOrNull(1)
-            }
+            val resNum = DetailHtmlParsingSupport.extractResNum(html, isOp, threadId)
             // OPはスレID、返信は本文内の No. からレス番号を抽出
 
             if (html.isNotBlank()) {
                 // レス番号ベースの安定ID（機能互換性を保持）
-                val stableId = if (isOp) {
-                    "text_op_$threadId"
-                } else {
-                    "text_${resNum ?: "reply_${threadId}_${index}"}"
-                }
+                val stableId = DetailHtmlParsingSupport.buildTextContentId(isOp, threadId, resNum, index)
                 progressivelyLoadedContent.add(
                     DetailContent.Text(
                         id = stableId,
@@ -610,7 +590,7 @@ class DetailViewModel @Inject constructor(
 
                 // OPのテキスト部分内で画像リンクを検索（より限定的に）
                 val opMediaLinks = cloned.select("a[target=_blank][href]").filter { a ->
-                    MEDIA_URL_PATTERN.containsMatchIn(a.attr("href"))
+                    DetailHtmlParsingSupport.isMediaUrl(a.attr("href"))
                 }
 
                 // OPに画像がない場合はnullを返す（次の画像を取得しない）
@@ -624,7 +604,7 @@ class DetailViewModel @Inject constructor(
             } else {
                 // 返信の場合、通常通り検索
                 block.select("a[target=_blank][href]").firstOrNull { a ->
-                    MEDIA_URL_PATTERN.containsMatchIn(a.attr("href"))
+                    DetailHtmlParsingSupport.isMediaUrl(a.attr("href"))
                 }
             }
 
@@ -635,34 +615,12 @@ class DetailViewModel @Inject constructor(
                 val hrefAttr = link.attr("href")
                 try {
                     val absoluteUrl = URL(URL(url), hrefAttr).toString()
-                    val fileName = absoluteUrl.substringAfterLast('/')
-                    val thumbnailUrl = resolveThumbnailUrl(link, url, absoluteUrl)
-
-                    // 効率的な拡張子チェック
-                    val extension = hrefAttr.substringAfterLast('.', "").lowercase()
-                    val mediaContent = when {
-                        extension in IMAGE_EXTENSIONS -> {
-                            // URLのみでID生成し、HTML解析の影響を排除
-                            DetailContent.Image(
-                                id = "image_${absoluteUrl.hashCode().toUInt().toString(16)}",
-                                imageUrl = absoluteUrl,
-                                prompt = null,
-                                fileName = fileName,
-                                thumbnailUrl = thumbnailUrl
-                            )
-                        }
-                        extension in VIDEO_EXTENSIONS -> {
-                            // URLのみでID生成し、HTML解析の影響を排除
-                            DetailContent.Video(
-                                id = "video_${absoluteUrl.hashCode().toUInt().toString(16)}",
-                                videoUrl = absoluteUrl,
-                                prompt = null,
-                                fileName = fileName,
-                                thumbnailUrl = null
-                            )
-                        }
-                        else -> null
-                    }
+                    val thumbnailUrl = DetailHtmlParsingSupport.resolveThumbnailUrl(link, url, absoluteUrl)
+                    val mediaContent = DetailHtmlParsingSupport.buildMediaContent(
+                        absoluteUrl = absoluteUrl,
+                        rawHref = hrefAttr,
+                        thumbnailUrl = thumbnailUrl
+                    )
 
                     if (mediaContent != null) {
                         progressivelyLoadedContent.add(mediaContent)
@@ -689,169 +647,11 @@ class DetailViewModel @Inject constructor(
             }
         }
 
-        // スレッド終了時刻の解析
-        val scriptElements = document.select("script")
-        var threadEndTime: String? = null
-
-        for (scriptElement in scriptElements) {
-            val scriptData = scriptElement.data()
-            if (scriptData.contains("document.write") && scriptData.contains("contdisp")) {
-                val docWriteMatch = DOC_WRITE.find(scriptData)
-                val writtenHtmlFromDocWrite = docWriteMatch?.groupValues?.getOrNull(1)
-                val writtenHtml = writtenHtmlFromDocWrite
-                    ?.replace("\\'", "'")
-                    ?.replace("\\/", "/")
-                if (writtenHtml != null) {
-                    val timeMatch = TIME.find(writtenHtml)
-                    threadEndTime = timeMatch?.groupValues?.getOrNull(1)
-                    if (threadEndTime != null) break
-                }
-            }
-        }
-
-        threadEndTime?.let {
-            progressivelyLoadedContent.add(
-                DetailContent.ThreadEndTime(
-                    // 時刻文字列のハッシュでThreadEndTimeのIDを固定
-                    id = "thread_end_time_${it.hashCode().toUInt().toString(16)}",
-                    endTime = it
-                )
-            )
+        DetailHtmlParsingSupport.extractThreadEndTime(document)?.let {
+            progressivelyLoadedContent.add(DetailHtmlParsingSupport.buildThreadEndTimeContent(it))
         }
 
         return@withContext progressivelyLoadedContent.toList()
-    }
-
-    private fun deriveResFromFileName(fileName: String): String? {
-        val candidate = fileName.substringBeforeLast('.', "").takeIf { it.isNotBlank() }
-        return candidate?.takeIf { it.any(Char::isDigit) }
-    }
-
-    /** アンカータグ内の <img> からサムネイルURLを解決し、なければフルURLから推測する。 */
-    private fun resolveThumbnailUrl(
-        linkNode: Element,
-        documentUrl: String,
-        fullImageUrl: String
-    ): String? {
-        val base = runCatching { URL(documentUrl) }.getOrNull()
-        fun Element?.resolveAttr(vararg names: String): String? {
-            if (this == null) return null
-            for (name in names) {
-                if (!hasAttr(name)) continue
-                val raw = attr(name).trim()
-                if (raw.isEmpty()) continue
-                val normalized = raw.substringBefore(' ').substringBefore(',')
-                if (normalized.isEmpty() || normalized.startsWith("data:", ignoreCase = true)) continue
-                val absolute = if (normalized.startsWith("http://") || normalized.startsWith("https://")) {
-                    normalized
-                } else {
-                    base?.let { runCatching { URL(it, normalized).toString() }.getOrNull() }
-                }
-                if (!absolute.isNullOrBlank()) return absolute
-            }
-            return null
-        }
-
-        // 1. <img> や <source> の各属性(src/data-src/srcset等)を優先的に解決
-        val imgNodes = linkNode.select("img,source")
-        for (node in imgNodes) {
-            node.resolveAttr(
-                "src",
-                "data-src",
-                "data-original",
-                "data-thumb",
-                "data-lazy-src",
-                "data-lazy",
-                "data-llsrc",
-                "data-placeholder",
-                "data-url"
-            )?.let { return it }
-            node.resolveAttr("srcset", "data-srcset")?.let { return it }
-        }
-
-        // 2. 属性で取得できない場合は HTML の構造上に存在する子孫の <img> を走査
-        linkNode.select("*[src],*[data-src],*[srcset],*[data-srcset]").forEach { element ->
-            element.resolveAttr(
-                "src",
-                "data-src",
-                "data-original",
-                "data-thumb",
-                "data-lazy-src",
-                "data-lazy",
-                "data-llsrc",
-                "data-placeholder",
-                "data-url",
-                "srcset",
-                "data-srcset"
-            )?.let { return it }
-        }
-
-        return guessThumbnailFromFull(fullImageUrl)
-    }
-
-    /** `/src/12345.jpg` -> `/thumb/12345s.jpg` 形式でサムネイルURLを推測する。 */
-    private fun guessThumbnailFromFull(fullImageUrl: String): String? {
-        val sanitized = fullImageUrl
-            .substringBefore('#')
-            .substringBefore('?')
-        val marker = "/src/"
-        val markerIndex = sanitized.indexOf(marker)
-        if (markerIndex == -1) return null
-        val dot = sanitized.lastIndexOf('.')
-        val hasExtension = dot > markerIndex && dot < sanitized.length - 1
-        val baseWithoutExt = if (hasExtension) sanitized.substring(0, dot) else sanitized
-        val originalExtension = if (hasExtension) sanitized.substring(dot + 1).lowercase() else ""
-        val extensionCandidates = buildList {
-            if (originalExtension.isNotBlank()) {
-                if (originalExtension != "jpg" && originalExtension != "jpeg") add("jpg")
-                add(originalExtension)
-            } else {
-                add("jpg")
-            }
-        }
-        val replacements = listOf("/thumb/", "/cat/")
-        for (replacement in replacements) {
-            val replaced = baseWithoutExt.replaceFirst(marker, replacement)
-            if (replaced == baseWithoutExt) continue
-            val baseCandidates = buildList {
-                val withSuffix = if (replaced.endsWith("s")) replaced else replaced + "s"
-                add(withSuffix)
-                if (withSuffix != replaced) add(replaced)
-            }
-            for (baseCandidate in baseCandidates) {
-                for (ext in extensionCandidates) {
-                    val candidate = if (ext.isNotBlank()) "$baseCandidate.$ext" else baseCandidate
-                    if (!candidate.equals(sanitized, ignoreCase = true)) return candidate
-                }
-            }
-        }
-        return null
-    }
-
-    /**
-     * DetailContentの内容ハッシュを生成し、重複判定に使用する。
-     * IDとは独立して、実際のコンテンツの同一性を判定する。
-     */
-    private fun contentHash(content: DetailContent): String {
-        return when (content) {
-            is DetailContent.Text -> {
-                // 本文内容から「そうだね数」等の可変要素を除外してハッシュ化
-                val plainText = android.text.Html.fromHtml(content.htmlContent, android.text.Html.FROM_HTML_MODE_COMPACT).toString()
-                extractPlainBodyFromPlain(plainText).hashCode().toString()
-            }
-            is DetailContent.Image -> {
-                // 画像URLでハッシュ化（プロンプトは変動するため除外）
-                content.imageUrl.hashCode().toString()
-            }
-            is DetailContent.Video -> {
-                // 動画URLでハッシュ化
-                content.videoUrl.hashCode().toString()
-            }
-            is DetailContent.ThreadEndTime -> {
-                // 終了時刻でハッシュ化
-                content.endTime.hashCode().toString()
-            }
-        }
     }
 
     /**
@@ -1002,26 +802,11 @@ class DetailViewModel @Inject constructor(
 
     // ===== 補助関数と正規表現 =====
 
-    /**
-     * メディア（画像/動画）ファイル拡張子を持つかを簡易判定する。
-     * 解析対象の `<a href>` の抽出フィルタとして使用。
-     */
-    private fun isMediaUrl(rawHref: String): Boolean {
-        return MEDIA_URL_PATTERN.containsMatchIn(rawHref)
-    }
     companion object {
         // プリコンパイル済み正規表現
-        private val DOC_WRITE = Regex("""document\.write\s*\(\s*'(.*?)'\s*\)""")
-        private val TIME = Regex("""<span id="contdisp">([^<]+)</span>""")
-        private val NO_PATTERN = Regex("""No\.?\s*(\n?\s*)?(\d+)""")
-        private val NO_PATTERN_FALLBACK = Regex("""No\.?\s*(\d+)""")
-        private val MEDIA_URL_PATTERN = Regex("""\.(jpg|jpeg|png|gif|webp|webm|mp4)$""", RegexOption.IGNORE_CASE)
         private val TABLE_REMOVAL_PATTERN = Regex("<table[^>]*>.*?</table>", RegexOption.DOT_MATCHES_ALL)
         private val IMG_WITH_ALT_PATTERN = Regex("<img[^>]*alt=[\"']([^\"']*)[\"'][^>]*>")
         private val IMG_PATTERN = Regex("<img[^>]*>")
-        private val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "gif", "webp")
-        private val VIDEO_EXTENSIONS = setOf("webm", "mp4")
-        private val DUPLICATE_WHITESPACE_REGEX = Regex("\\s+")
     }
 
     // ===== NG フィルタリング =====
@@ -1059,7 +844,12 @@ class DetailViewModel @Inject constructor(
         val plainTextMap = computePlainTextMap(filtered)
         val displayPreferences = withContext(Dispatchers.Default) { loadDisplayFilterConfig() }
         val displayFiltered = withContext(Dispatchers.Default) {
-            applyDisplayFilters(filtered, plainTextMap, displayPreferences)
+            DetailDisplayFilter.apply(
+                items = filtered,
+                plainTextCache = plainTextMap,
+                config = displayPreferences,
+                plainTextOf = ::toPlainText
+            )
         }
         val displayPlainText = withContext(Dispatchers.Default) {
             displayFiltered.asSequence()
@@ -1096,71 +886,7 @@ class DetailViewModel @Inject constructor(
 
     private suspend fun mergePrompts(base: List<DetailContent>, prior: List<DetailContent>): List<DetailContent> {
         if (base.isEmpty() || prior.isEmpty()) return base
-
-        return withContext(Dispatchers.Default) {
-            fun keyForImage(url: String?, fileName: String?): List<String> {
-                val keys = mutableListOf<String>()
-                // 1. ファイル名での照合
-                fileName?.takeIf { it.isNotBlank() }?.let { keys.add(it) }
-                // 2. URL末尾のファイル名での照合
-                url?.substringAfterLast('/')?.takeIf { it.isNotBlank() }?.let { keys.add(it) }
-                // 3. 完全URLでの照合
-                url?.takeIf { it.isNotBlank() }?.let { keys.add(it) }
-                return keys
-            }
-
-            val promptByKey: Map<String, String> = buildMap {
-                prior.forEach { dc ->
-                    when (dc) {
-                        is DetailContent.Image -> {
-                            val keys = keyForImage(dc.imageUrl, dc.fileName)
-                            val p = dc.prompt
-                            if (!p.isNullOrBlank()) {
-                                keys.forEach { k -> put(k, p) }
-                            }
-                        }
-                        is DetailContent.Video -> {
-                            val keys = keyForImage(dc.videoUrl, dc.fileName)
-                            val p = dc.prompt
-                            if (!p.isNullOrBlank()) {
-                                keys.forEach { k -> put(k, p) }
-                            }
-                        }
-                        else -> {}
-                    }
-                }
-            }
-
-            if (promptByKey.isEmpty()) {
-                base
-            } else {
-                base.map { dc ->
-                    when (dc) {
-                        is DetailContent.Image -> {
-                            val currentPrompt = dc.prompt
-                            if (!currentPrompt.isNullOrBlank()) {
-                                dc // 既にプロンプトがある場合はそのまま
-                            } else {
-                                val keys = keyForImage(dc.imageUrl, dc.fileName)
-                                val p = keys.firstNotNullOfOrNull { k -> promptByKey[k] }
-                                if (!p.isNullOrBlank()) dc.copy(prompt = p) else dc
-                            }
-                        }
-                        is DetailContent.Video -> {
-                            val currentPrompt = dc.prompt
-                            if (!currentPrompt.isNullOrBlank()) {
-                                dc // 既にプロンプトがある場合はそのまま
-                            } else {
-                                val keys = keyForImage(dc.videoUrl, dc.fileName)
-                                val p = keys.firstNotNullOfOrNull { k -> promptByKey[k] }
-                                if (!p.isNullOrBlank()) dc.copy(prompt = p) else dc
-                            }
-                        }
-                        else -> dc
-                    }
-                }
-            }
-        }
+        return withContext(Dispatchers.Default) { DetailPromptMerger.merge(base, prior) }
     }
 
     /** NGルールに基づきテキストと直後のメディア列を順次評価して返す（skipping 状態を全体で共有するため並列化しない）。 */
@@ -1168,162 +894,30 @@ class DetailViewModel @Inject constructor(
         val cacheKey = src to rules
         ngFilterCache.get(cacheKey)?.let { return it }
 
-        val result = filterChunk(src, rules)
+        val result = DetailNgFilter.filter(
+            items = src,
+            rules = rules,
+            idOf = ::extractIdFromTextContent,
+            bodyOf = ::extractPlainBodyOfTextContent
+        )
 
         ngFilterCache.put(cacheKey, result)
         return result
     }
 
-    private fun filterChunk(src: List<DetailContent>, rules: List<NgRule>): List<DetailContent> {
-        if (src.isEmpty()) return src
-        val out = ArrayList<DetailContent>(src.size)
-        var skipping = false
-        for (item in src) {
-            when (item) {
-                is DetailContent.Text -> {
-                    if (isNgItem(item, rules)) {
-                        skipping = true
-                        continue
-                    } else {
-                        skipping = false
-                        out += item
-                    }
-                }
-                is DetailContent.Image, is DetailContent.Video -> {
-                    if (!skipping) out += item
-                }
-                is DetailContent.ThreadEndTime -> out += item
-            }
-        }
-        return out
-    }
-
-    private fun isNgItem(item: DetailContent.Text, rules: List<NgRule>): Boolean {
-        val id = extractIdFromHtml(item.htmlContent)
-        val body = extractPlainBodyFromPlain(plainTextOf(item))
-        return rules.any { r ->
-            when (r.type) {
-                RuleType.ID -> {
-                    if (id.isNullOrBlank()) false else match(id, r.pattern, r.match ?: MatchType.EXACT, ignoreCase = true)
-                }
-                RuleType.BODY -> match(body, r.pattern, r.match ?: MatchType.SUBSTRING, ignoreCase = true)
-                RuleType.TITLE -> false // タイトルNGはMainActivity側で適用
-            }
-        }
-    }
-
-    /** NGルールに基づきテキストと直後のメディア列を間引いた一覧を返す（従来版）。 */
-    private fun filterByNgRules(src: List<DetailContent>, rules: List<NgRule>): List<DetailContent> {
-        if (src.isEmpty()) return src
-        val out = ArrayList<DetailContent>(src.size)
-        var skipping = false
-        for (item in src) {
-            when (item) {
-                is DetailContent.Text -> {
-                    val id = extractIdFromHtml(item.htmlContent)
-                    // プレーンテキストはキャッシュを活用
-                    val body = extractPlainBodyFromPlain(plainTextOf(item))
-                    val isNg = rules.any { r ->
-                        when (r.type) {
-                            RuleType.ID -> {
-                                if (id.isNullOrBlank()) false else match(id, r.pattern, r.match ?: MatchType.EXACT, ignoreCase = true)
-                            }
-                            RuleType.BODY -> match(body, r.pattern, r.match ?: MatchType.SUBSTRING, ignoreCase = true)
-                            RuleType.TITLE -> false // タイトルNGはMainActivity側で適用
-                        }
-                    }
-                    if (isNg) {
-                        skipping = true
-                        continue
-                    } else {
-                        skipping = false
-                        out += item
-                    }
-                }
-                is DetailContent.Image, is DetailContent.Video -> {
-                    if (!skipping) out += item
-                }
-                is DetailContent.ThreadEndTime -> out += item
-            }
-        }
-        return out
-    }
-
-    /** 指定のマッチ種別で文字列照合するユーティリティ。 */
-    private fun match(target: String, pattern: String, type: MatchType, ignoreCase: Boolean): Boolean {
-        return when (type) {
-            MatchType.EXACT -> target.equals(pattern, ignoreCase)
-            MatchType.PREFIX -> target.startsWith(pattern, ignoreCase)
-            MatchType.SUBSTRING -> target.contains(pattern, ignoreCase)
-            MatchType.REGEX -> runCatching { Regex(pattern, if (ignoreCase) setOf(RegexOption.IGNORE_CASE) else emptySet()).containsMatchIn(target) }.getOrElse { false }
-        }
-    }
-
     /** HTMLから ID: xxx を抽出。タグ境界とテキスト両方を考慮して安定化。 */
     private fun extractIdFromHtml(html: String): String? {
-        // 0) まず HTML 上で抽出（タグ境界で確実に切れる）
-        run {
-            val htmlNorm = java.text.Normalizer.normalize(
-                html
-                    .replace("\u200B", "")
-                    .replace('　', ' ')
-                    .replace('：', ':')
-                , java.text.Normalizer.Form.NFKC
-            )
-            val htmlRegex = Regex("""(?i)\bID\s*:\s*([^\s<)]+)""")
-            val hm = htmlRegex.find(htmlNorm)
-            hm?.groupValues?.getOrNull(1)?.trim()?.let { return it }
+        return DetailTextParser.extractIdFromHtml(html) { rawHtml ->
+            DetailPlainTextFormatter.fromHtml(rawHtml)
         }
-
-        // 1) HTMLから生成したプレーンテキスト側（タグが落ちることで No. が隣接するケースに対処）
-        val plain = android.text.Html
-            .fromHtml(html, android.text.Html.FROM_HTML_MODE_COMPACT)
-            .toString()
-        val normalized = java.text.Normalizer.normalize(
-            plain
-                .replace("\u200B", "")
-                .replace('　', ' ')
-                .replace('：', ':')
-            , java.text.Normalizer.Form.NFKC
-        )
-        // No. が直後に続く場合に備えて、No. 直前で打ち切る先読み
-        val plainRegex = Regex("""\b[Ii][Dd]\s*:\s*([A-Za-z0-9+/_\.-]+)(?=\s|\(|$|No\.)""")
-        val pm = plainRegex.find(normalized)
-        return pm?.groupValues?.getOrNull(1)?.trim()
     }
 
-    /** 検索用のプレーン本文を生成（付帯情報やファイル行を除去）。 */
-    private fun extractPlainBody(html: String): String {
-        val plain = android.text.Html.fromHtml(html, android.text.Html.FROM_HTML_MODE_COMPACT).toString()
-        return extractPlainBodyFromPlain(plain)
+    private fun extractIdFromTextContent(text: DetailContent.Text): String? {
+        return extractIdFromHtml(text.htmlContent)
     }
 
-    private fun extractPlainBodyFromPlain(plain: String): String {
-        val dateRegex = Regex("""\d{2}/\d{2}/\d{2}\([^)]+\)\d{2}:\d{2}:\d{2}""")
-        val fileExtRegex = Regex("""\.(?:jpg|jpeg|png|gif|webp|bmp|svg|webm|mp4|mov|mkv|avi|wmv|flv)\b""", RegexOption.IGNORE_CASE)
-        val sizeSuffixRegex = Regex("""[ \t]*[\\-ー−―–—]?\s*\(\s*\d+(?:\.\d+)?\s*(?:[kKmMgGtT]?[bB])\s*\)""")
-        val headLabelRegex = Regex("""^(?:画像|動画|ファイル名|ファイル|添付|サムネ|サムネイル)(?:\s*ファイル名)?\s*[:：]""", RegexOption.IGNORE_CASE)
-
-        fun isLabeledSizeOnlyLine(t: String): Boolean {
-            return headLabelRegex.containsMatchIn(t) && sizeSuffixRegex.containsMatchIn(t)
-        }
-
-        return plain
-            .lineSequence()
-            .map { it.trimEnd() }
-            .filterNot { line ->
-                val t = line.trim()
-                t.startsWith("ID:") || t.startsWith("No.") || dateRegex.containsMatchIn(t) || t.contains("Name")
-            }
-            .filterNot { line ->
-                val t = line.trim()
-                headLabelRegex.containsMatchIn(t) ||
-                        (fileExtRegex.containsMatchIn(t) && sizeSuffixRegex.containsMatchIn(t)) ||
-                        isLabeledSizeOnlyLine(t) ||
-                        (fileExtRegex.containsMatchIn(t) && t.contains("サムネ"))
-            }
-            .joinToString("\n")
-            .trimEnd()
+    private fun extractPlainBodyOfTextContent(text: DetailContent.Text): String {
+        return DetailTextParser.extractPlainBodyFromPlain(plainTextOf(text))
     }
 
     private fun markPromptLoading(ids: Collection<String>, loading: Boolean) {
@@ -1339,32 +933,7 @@ class DetailViewModel @Inject constructor(
 
     private suspend fun sanitizePrompts(list: List<DetailContent>): List<DetailContent> {
         if (list.isEmpty()) return list
-        val needsSanitize = list.any { it.hasPromptNeedingSanitize() }
-        if (!needsSanitize) return list
-
-        return withContext(Dispatchers.Default) {
-            var changed = false
-            val sanitized = list.map { content ->
-                when (content) {
-                    is DetailContent.Image -> {
-                        val normalized = normalizePrompt(content.prompt)
-                        if (normalized != content.prompt) {
-                            changed = true
-                            content.copy(prompt = normalized)
-                        } else content
-                    }
-                    is DetailContent.Video -> {
-                        val normalized = normalizePrompt(content.prompt)
-                        if (normalized != content.prompt) {
-                            changed = true
-                            content.copy(prompt = normalized)
-                        } else content
-                    }
-                    else -> content
-                }
-            }
-            if (changed) sanitized else list
-        }
+        return withContext(Dispatchers.Default) { DetailPromptSanitizer.sanitizeContents(list) }
     }
 
     private suspend fun setRawContentSanitized(list: List<DetailContent>): List<DetailContent> {
@@ -1373,28 +942,8 @@ class DetailViewModel @Inject constructor(
         return sanitized
     }
 
-    private fun DetailContent.hasPromptNeedingSanitize(): Boolean = when (this) {
-        is DetailContent.Image -> this.prompt.needsHtmlNormalization()
-        is DetailContent.Video -> this.prompt.needsHtmlNormalization()
-        else -> false
-    }
-
-    private fun String?.needsHtmlNormalization(): Boolean {
-        val value = this?.trim() ?: return false
-        if (value.isEmpty()) return false
-        val hasAngleBrackets = value.indexOf('<') >= 0 && value.indexOf('>') > value.indexOf('<')
-        if (hasAngleBrackets) return true
-        val lower = value.lowercase()
-        return lower.contains("&lt;") || lower.contains("&gt;") || lower.contains("&amp;") || lower.contains("&#")
-    }
-
     private fun normalizePrompt(raw: String?): String? {
-        if (raw == null) return null
-        val trimmed = raw.trim()
-        if (trimmed.isEmpty()) return null
-        if (!trimmed.needsHtmlNormalization()) return trimmed
-        val plain = HtmlCompat.fromHtml(trimmed, HtmlCompat.FROM_HTML_MODE_COMPACT).toString().trim()
-        return plain.ifBlank { null }
+        return DetailPromptSanitizer.normalize(raw)
     }
 
     // ===== 検索: 公開APIと内部実装 =====
@@ -1450,18 +999,7 @@ class DetailViewModel @Inject constructor(
         }
         val contentList = contentOverride ?: displayContent.value.ifEmpty { detailContent.value }
         viewModelScope.launch(Dispatchers.Default) {
-            val hits = mutableListOf<Int>()
-            contentList.forEachIndexed { index, content ->
-                val textToSearch: String? = when (content) {
-                    is DetailContent.Text -> plainTextOf(content)
-                    is DetailContent.Image -> "${content.prompt ?: ""} ${content.fileName ?: ""} ${content.imageUrl.substringAfterLast('/')}"
-                    is DetailContent.Video -> "${content.prompt ?: ""} ${content.fileName ?: ""} ${content.videoUrl.substringAfterLast('/')}"
-                    is DetailContent.ThreadEndTime -> null
-                }
-                if (textToSearch?.contains(q, ignoreCase = true) == true) {
-                    hits.add(index)
-                }
-            }
+            val hits = DetailSearchEngine.findHitPositions(q, contentList, ::plainTextOf)
             withContext(Dispatchers.Main) {
                 searchResultPositions.clear()
                 searchResultPositions.addAll(hits)
@@ -1478,7 +1016,7 @@ class DetailViewModel @Inject constructor(
     val plainTextCache: StateFlow<Map<String, String>> = _plainTextCache.asStateFlow()
 
     private fun toPlainText(t: DetailContent.Text): String {
-        return android.text.Html.fromHtml(t.htmlContent, android.text.Html.FROM_HTML_MODE_COMPACT).toString()
+        return DetailPlainTextFormatter.fromText(t)
     }
 
     private suspend fun computePlainTextMap(list: List<DetailContent>): Map<String, String> {
@@ -1496,17 +1034,11 @@ class DetailViewModel @Inject constructor(
             val missing = contents.asSequence()
                 .filterIsInstance<DetailContent.Text>()
                 .filter { !current.containsKey(it.id) }
+                .map { text -> text.id to toPlainText(text) }
                 .toList()
             if (missing.isEmpty()) return@launch
-            val updated = HashMap(current)
-            var changed = false
-            for (text in missing) {
-                if (!updated.containsKey(text.id)) {
-                    updated[text.id] = toPlainText(text)
-                    changed = true
-                }
-            }
-            if (changed) {
+            val updated = DetailPlainTextCachePolicy.addMissing(current, missing)
+            if (updated != null) {
                 withContext(Dispatchers.Main) { _plainTextCache.value = updated }
             }
         }
@@ -1517,28 +1049,13 @@ class DetailViewModel @Inject constructor(
         if (cached != null) return cached
         val now = toPlainText(t)
         viewModelScope.launch(Dispatchers.Default) {
-            val updated = HashMap(_plainTextCache.value)
-            if (!updated.containsKey(t.id)) {
-                updated[t.id] = now
-                // メモリリーク防止：キャッシュサイズを制限
-                if (updated.size > 500) {
-                    // 古いエントリを削除（最新の300件のみ保持・メモリ効率改善）
-                    val sorted = updated.entries.toList()
-                    val toKeep = sorted.takeLast(300).associate { it.key to it.value }
-                    withContext(Dispatchers.Main) { _plainTextCache.value = toKeep }
-                } else {
-                    withContext(Dispatchers.Main) { _plainTextCache.value = updated }
-                }
+            val updated = DetailPlainTextCachePolicy.put(_plainTextCache.value, t.id, now)
+            if (updated != null) {
+                withContext(Dispatchers.Main) { _plainTextCache.value = updated }
             }
         }
         return now
     }
-
-    private data class DisplayFilterConfig(
-        val hideDeletedRes: Boolean,
-        val hideDuplicateRes: Boolean,
-        val duplicateResThreshold: Int
-    )
 
     private fun loadDisplayFilterConfig(): DisplayFilterConfig {
         val hideDeleted = AppPreferences.getHideDeletedRes(appContext)
@@ -1546,200 +1063,6 @@ class DetailViewModel @Inject constructor(
         val threshold = AppPreferences.getDuplicateResThreshold(appContext)
         return DisplayFilterConfig(hideDeleted, hideDuplicate, threshold)
     }
-
-    private fun applyDisplayFilters(
-        items: List<DetailContent>,
-        plainTextCache: Map<String, String>,
-        config: DisplayFilterConfig
-    ): List<DetailContent> {
-        if (items.isEmpty()) return items
-        val fallbackPlainText = { text: DetailContent.Text -> plainTextCache[text.id] ?: toPlainText(text) }
-
-        val withoutDeleted = if (config.hideDeletedRes) {
-            items.filter { item ->
-                when (item) {
-                    is DetailContent.Text -> !isDeletedRes(item)
-                    else -> true
-                }
-            }
-        } else {
-            items
-        }
-
-        val withoutPhantom = filterPhantomQuoteResponses(withoutDeleted, plainTextCache, fallbackPlainText)
-
-        return if (config.hideDuplicateRes) {
-            filterDuplicateResponses(withoutPhantom, config.duplicateResThreshold, plainTextCache, fallbackPlainText)
-        } else {
-            withoutPhantom
-        }
-    }
-
-    private fun filterPhantomQuoteResponses(
-        items: List<DetailContent>,
-        plainTextCache: Map<String, String>,
-        plainTextOf: (DetailContent.Text) -> String
-    ): List<DetailContent> {
-        if (items.isEmpty()) return items
-        val seenBodyLines = mutableSetOf<String>()
-        val result = mutableListOf<DetailContent>()
-        var index = 0
-        var anyFiltered = false
-
-        while (index < items.size) {
-            val item = items[index]
-            if (item is DetailContent.Text) {
-                val plain = plainTextCache[item.id] ?: plainTextOf(item)
-                val lines = plain.lines()
-
-                var hide = false
-                lines@ for (line in lines) {
-                    val normalizedSource = line
-                        .replace("\u200B", "")
-                        .replace('　', ' ')
-                        .replace('＞', '>')
-                    val trimmedStart = normalizedSource.trimStart()
-                    if (!trimmedStart.startsWith(">")) continue
-                    val leadingGtCount = trimmedStart.takeWhile { it == '>' }.length
-                    if (leadingGtCount != 1) continue
-                    val quoteBody = trimmedStart.drop(leadingGtCount).trimStart()
-                    val normalizedQuote = normalizeBodyLineForQuoteDetection(quoteBody) ?: continue
-                    if (normalizedQuote.length < 2) continue
-                    if (normalizedQuote.all { it.isDigit() }) continue
-                    if (normalizedQuote !in seenBodyLines) {
-                        hide = true
-                        break@lines
-                    }
-                }
-
-                if (hide) {
-                    anyFiltered = true
-                    index++
-                    while (index < items.size) {
-                        val attachment = items[index]
-                        if (attachment is DetailContent.Image || attachment is DetailContent.Video) {
-                            anyFiltered = true
-                            index++
-                        } else {
-                            break
-                        }
-                    }
-                    continue
-                } else {
-                    result += item
-                    for (line in lines) {
-                        val normalized = normalizeBodyLineForQuoteDetection(line) ?: continue
-                        val trimmedStart = line
-                            .replace("\u200B", "")
-                            .replace('　', ' ')
-                            .replace('＞', '>')
-                            .trimStart()
-                        val leadingGt = trimmedStart.takeWhile { it == '>' }.length
-                        if (leadingGt == 0) {
-                            seenBodyLines += normalized
-                        }
-                    }
-                    index++
-                }
-            } else {
-                result += item
-                index++
-            }
-        }
-
-        return if (anyFiltered) result else items
-    }
-
-    private fun filterDuplicateResponses(
-        items: List<DetailContent>,
-        threshold: Int,
-        plainTextCache: Map<String, String>,
-        plainTextOf: (DetailContent.Text) -> String
-    ): List<DetailContent> {
-        if (items.isEmpty()) return items
-        val limit = threshold.coerceAtLeast(1)
-        val result = mutableListOf<DetailContent>()
-        val counters = mutableMapOf<String, Int>()
-        var index = 0
-        var anyFiltered = false
-
-        while (index < items.size) {
-            val item = items[index]
-            if (item is DetailContent.Text) {
-                val plain = plainTextCache[item.id] ?: plainTextOf(item)
-                val key = buildDuplicateContentKey(plain)
-                if (key != null) {
-                    val newCount = (counters[key] ?: 0) + 1
-                    counters[key] = newCount
-                    if (newCount <= limit) {
-                        result += item
-                        index++
-                    } else {
-                        anyFiltered = true
-                        index++
-                        while (index < items.size) {
-                            val attachment = items[index]
-                            if (attachment is DetailContent.Image || attachment is DetailContent.Video) {
-                                anyFiltered = true
-                                index++
-                            } else {
-                                break
-                            }
-                        }
-                    }
-                    continue
-                }
-            }
-            result += item
-            index++
-        }
-
-        return if (anyFiltered) result else items
-    }
-
-    private fun normalizeBodyLineForQuoteDetection(raw: String): String? {
-        var normalized = raw
-            .replace("\u200B", "")
-            .replace('　', ' ')
-            .replace('＞', '>')
-            .trim()
-        if (normalized.isEmpty()) return null
-        normalized = Normalizer.normalize(normalized, Normalizer.Form.NFKC)
-        normalized = DUPLICATE_WHITESPACE_REGEX.replace(normalized, " ").trim()
-        if (normalized.isEmpty()) return null
-        if (normalized.startsWith("No.", ignoreCase = true)) return null
-        if (normalized.startsWith("ID:", ignoreCase = true)) return null
-        return normalized
-    }
-
-    private fun isDeletedRes(text: DetailContent.Text): Boolean {
-        return text.htmlContent.contains("スレッドを立てた人によって削除されました") ||
-            text.htmlContent.contains("書き込みをした人によって削除されました")
-    }
-
-    private fun buildDuplicateContentKey(plainText: String): String? {
-        val bodyLines = mutableListOf<String>()
-        for (line in plainText.lines()) {
-            var normalized = line.replace("\u200B", "")
-                .replace('　', ' ')
-                .replace('＞', '>')
-                .replace('≫', '>')
-                .trim()
-            if (normalized.isEmpty()) continue
-            if (normalized.startsWith(">")) continue
-            normalized = Normalizer.normalize(normalized, Normalizer.Form.NFKC)
-            val collapsed = DUPLICATE_WHITESPACE_REGEX.replace(normalized, " ").trim()
-            if (collapsed.isEmpty()) continue
-            if (collapsed.startsWith("No.", ignoreCase = true)) continue
-            if (collapsed.startsWith("ID:", ignoreCase = true)) continue
-            bodyLines += collapsed
-        }
-
-        if (bodyLines.isEmpty()) return null
-        return bodyLines.joinToString("\n")
-    }
-
-
     // ===== 新アーキテクチャ対応のメタデータ更新処理 =====
 
     /**
@@ -1750,99 +1073,92 @@ class DetailViewModel @Inject constructor(
     private suspend fun updateMetadataWithEventStore(contentList: List<DetailContent>, url: String) {
         contentList.forEach { content ->
             when (content) {
-                is DetailContent.Image -> {
-                    if (!content.prompt.isNullOrBlank()) {
-                        // 既にプロンプトがある場合はキャッシュにも反映しておく
-                        viewModelScope.launch(Dispatchers.IO) {
-                            runCatching { metadataCache.put(content.imageUrl, content.prompt!!) }
-                        }
-                        return@forEach
-                    }
-
-                    if (!PromptSettings.isPromptFetchEnabled(appContext)) {
-                        return@forEach
-                    }
-
-                    markPromptLoading(content.id, true)
-                    eventStore.applyEvent(DetailEvent.MetadataExtractionStarted(content.id))
-
-                    viewModelScope.launch(Dispatchers.IO) {
-                        try {
-                            val cachedPrompt = runCatching { metadataCache.get(content.imageUrl) }.getOrNull()
-                            val prompt = if (!cachedPrompt.isNullOrBlank()) {
-                                cachedPrompt
-                            } else {
-                                withTimeoutOrNull(15000L) {
-                                    MetadataExtractor.extract(appContext, content.imageUrl, networkClient)
-                                }
-                            }
-
-                            val normalized = normalizePrompt(prompt)
-
-                            eventStore.updateMetadataProgressively(content.id, normalized)
-
-                            if (!normalized.isNullOrBlank()) {
-                                val listForPersistence = updateRawContent { current ->
-                                    var changed = false
-                                    val mapped = current.map { existing ->
-                                        when (existing) {
-                                            is DetailContent.Image ->
-                                                if (existing.id == content.id && existing.prompt != normalized) {
-                                                    changed = true
-                                                    existing.copy(prompt = normalized)
-                                                } else {
-                                                    existing
-                                                }
-                                            else -> existing
-                                        }
-                                    }
-                                    if (changed) mapped else current
-                                }
-                                runCatching { metadataCache.put(content.imageUrl, normalized) }
-                                runCatching { cacheManager.saveDetails(url, listForPersistence) }
-                            }
-                        } catch (e: Exception) {
-                            Log.e("DetailViewModel", "Metadata extraction error for ${content.imageUrl}", e)
-                            eventStore.updateMetadataProgressively(content.id, null)
-                        } finally {
-                            markPromptLoading(content.id, false)
-                        }
-                    }
-                }
-                is DetailContent.Video -> {
-                    if (content.prompt.isNullOrBlank()) {
-                        Log.d("DetailViewModel", "Video metadata extraction not yet implemented for ${content.videoUrl}")
-                    }
-                }
+                is DetailContent.Image -> scheduleImageMetadataUpdate(content, url)
+                is DetailContent.Video -> logPendingVideoMetadata(content)
                 else -> {}
             }
         }
     }
 
-    /** 検索UI表示用の集計（アクティブ/現在位置/総数）をフローに反映。 */
-    private fun publishSearchState() {
-        val active = (currentSearchQuery != null) && searchResultPositions.isNotEmpty()
-        val currentDisp = if (active && currentSearchHitIndex in searchResultPositions.indices) currentSearchHitIndex + 1 else 0
-        val total = searchResultPositions.size
-        val newState = SearchState(active = active, currentIndexDisplay = currentDisp, total = total)
-        _searchState.value = newState
-        viewModelScope.launch {
-            eventStore.applyEvent(DetailEvent.SearchStateUpdated(if (active) newState else null))
+    private suspend fun scheduleImageMetadataUpdate(content: DetailContent.Image, url: String) {
+        val existingPrompt = content.prompt
+        if (!existingPrompt.isNullOrBlank()) {
+            cacheResolvedPrompt(content.imageUrl, existingPrompt)
+            return
+        }
+
+        if (!PromptSettings.isPromptFetchEnabled(appContext)) return
+
+        markPromptLoading(content.id, true)
+        eventStore.applyEvent(DetailEvent.MetadataExtractionStarted(content.id))
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val normalizedPrompt = resolveNormalizedImagePrompt(content.imageUrl)
+                eventStore.updateMetadataProgressively(content.id, normalizedPrompt)
+                persistResolvedImagePrompt(content, url, normalizedPrompt)
+            } catch (e: Exception) {
+                Log.e("DetailViewModel", "Metadata extraction error for ${content.imageUrl}", e)
+                eventStore.updateMetadataProgressively(content.id, null)
+            } finally {
+                markPromptLoading(content.id, false)
+            }
         }
     }
 
-    private data class PendingDownloadRequest(
-        val id: Long,
-        val urls: List<String>,
-        val newUrls: List<String>,
-        val existingByUrl: Map<String, List<MediaSaver.ExistingMedia>>
-    ) {
-        val existingCount: Int get() = existingByUrl.values.sumOf { it.size }
+    private fun logPendingVideoMetadata(content: DetailContent.Video) {
+        if (content.prompt.isNullOrBlank()) {
+            Log.d("DetailViewModel", "Video metadata extraction not yet implemented for ${content.videoUrl}")
+        }
     }
 
-    private enum class DownloadConflictResolution {
-        SkipExisting,
-        OverwriteExisting
+    private suspend fun resolveNormalizedImagePrompt(imageUrl: String): String? {
+        val cachedPrompt = runCatching { metadataCache.get(imageUrl) }.getOrNull()
+        val prompt = if (!cachedPrompt.isNullOrBlank()) {
+            cachedPrompt
+        } else {
+            withTimeoutOrNull(15000L) {
+                MetadataExtractor.extract(appContext, imageUrl, networkClient)
+            }
+        }
+        return normalizePrompt(prompt)
+    }
+
+    private suspend fun persistResolvedImagePrompt(
+        content: DetailContent.Image,
+        url: String,
+        normalizedPrompt: String?
+    ) {
+        if (normalizedPrompt.isNullOrBlank()) return
+
+        val listForPersistence = updateRawContent { current ->
+            DetailContentPromptUpdater.updatePrompt(
+                contents = current,
+                contentId = content.id,
+                prompt = normalizedPrompt
+            )
+        }
+        cacheResolvedPrompt(content.imageUrl, normalizedPrompt)
+        runCatching { cacheManager.saveDetails(url, listForPersistence) }
+    }
+
+    private fun cacheResolvedPrompt(imageUrl: String, prompt: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { metadataCache.put(imageUrl, prompt) }
+        }
+    }
+
+    /** 検索UI表示用の集計（アクティブ/現在位置/総数）をフローに反映。 */
+    private fun publishSearchState() {
+        val newState = DetailSearchEngine.buildState(
+            hasQuery = currentSearchQuery != null,
+            hitPositions = searchResultPositions,
+            currentHitIndex = currentSearchHitIndex
+        )
+        _searchState.value = newState
+        viewModelScope.launch {
+            eventStore.applyEvent(DetailEvent.SearchStateUpdated(if (newState.active) newState else null))
+        }
     }
 
     fun downloadImages(urls: List<String>) {
@@ -1896,16 +1212,10 @@ class DetailViewModel @Inject constructor(
         viewModelScope.launch {
             val requestId = downloadRequestIdGenerator.incrementAndGet()
             val existingByUrl = MediaSaver.findExistingImages(appContext, urls)
-            val newUrls = urls.filterNot { existingByUrl.containsKey(it) }
-            val pending = PendingDownloadRequest(
-                id = requestId,
-                urls = urls,
-                newUrls = newUrls,
-                existingByUrl = existingByUrl
-            )
+            val pending = DetailBulkDownloadPlanner.createPendingRequest(requestId, urls, existingByUrl)
 
-            if (existingByUrl.isEmpty()) {
-                performBulkDownload(pending, DownloadConflictResolution.SkipExisting)
+            if (!DetailBulkDownloadPlanner.shouldShowConflictDialog(pending)) {
+                performBulkDownload(pending, DetailDownloadConflictResolution.SkipExisting)
                 return@launch
             }
 
@@ -1913,17 +1223,8 @@ class DetailViewModel @Inject constructor(
                 pendingDownloadRequests[requestId] = pending
             }
 
-            val conflictFiles = existingByUrl
-                .flatMap { (url, entries) -> entries.map { DownloadConflictFile(url = url, fileName = it.fileName) } }
-                .sortedBy { it.fileName }
-
             _downloadConflictRequests.emit(
-                DownloadConflictRequest(
-                    requestId = requestId,
-                    totalCount = urls.size,
-                    newCount = newUrls.size,
-                    existingFiles = conflictFiles
-                )
+                DetailBulkDownloadPlanner.buildConflictRequest(pending) { it.fileName }
             )
         }
     }
@@ -1931,25 +1232,21 @@ class DetailViewModel @Inject constructor(
     fun confirmDownloadSkip(requestId: Long) {
         viewModelScope.launch {
             val pending = removePendingRequest(requestId) ?: return@launch
-            if (pending.newUrls.isEmpty()) {
+            if (DetailBulkDownloadPlanner.hasNoDownloadTargets(pending, DetailDownloadConflictResolution.SkipExisting)) {
                 withContext(Dispatchers.Main) {
-                    val message = if (pending.existingCount > 0) {
-                        "${pending.existingCount}件の画像は既にダウンロード済みでした"
-                    } else {
-                        "ダウンロード対象の画像がありません"
-                    }
+                    val message = DetailDownloadMessageBuilder.buildNoTargetMessage(pending.existingCount)
                     android.widget.Toast.makeText(appContext, message, android.widget.Toast.LENGTH_SHORT).show()
                 }
                 return@launch
             }
-            performBulkDownload(pending, DownloadConflictResolution.SkipExisting)
+            performBulkDownload(pending, DetailDownloadConflictResolution.SkipExisting)
         }
     }
 
     fun confirmDownloadOverwrite(requestId: Long) {
         viewModelScope.launch {
             val pending = removePendingRequest(requestId) ?: return@launch
-            performBulkDownload(pending, DownloadConflictResolution.OverwriteExisting)
+            performBulkDownload(pending, DetailDownloadConflictResolution.OverwriteExisting)
         }
     }
 
@@ -1978,28 +1275,21 @@ class DetailViewModel @Inject constructor(
         }
     }
 
-    private suspend fun removePendingRequest(requestId: Long): PendingDownloadRequest? {
+    private suspend fun removePendingRequest(requestId: Long): DetailPendingDownloadRequest<MediaSaver.ExistingMedia>? {
         return pendingDownloadMutex.withLock { pendingDownloadRequests.remove(requestId) }
     }
 
     private suspend fun performBulkDownload(
-        pending: PendingDownloadRequest,
-        resolution: DownloadConflictResolution
+        pending: DetailPendingDownloadRequest<MediaSaver.ExistingMedia>,
+        resolution: DetailDownloadConflictResolution
     ) {
-        val urlsToDownload = when (resolution) {
-            DownloadConflictResolution.SkipExisting -> pending.newUrls
-            DownloadConflictResolution.OverwriteExisting -> pending.urls
-        }
+        val urlsToDownload = DetailBulkDownloadPlanner.selectUrlsToDownload(pending, resolution)
 
         val total = urlsToDownload.size
 
-        if (resolution == DownloadConflictResolution.SkipExisting && total == 0) {
+        if (DetailBulkDownloadPlanner.hasNoDownloadTargets(pending, resolution)) {
             withContext(Dispatchers.Main) {
-                val message = if (pending.existingCount > 0) {
-                    "${pending.existingCount}件の画像は既にダウンロード済みでした"
-                } else {
-                    "ダウンロード対象の画像がありません"
-                }
+                val message = DetailDownloadMessageBuilder.buildNoTargetMessage(pending.existingCount)
                 android.widget.Toast.makeText(appContext, message, android.widget.Toast.LENGTH_SHORT).show()
             }
             return
@@ -2009,10 +1299,13 @@ class DetailViewModel @Inject constructor(
 
         _downloadProgress.value = DownloadProgress(0, total, isActive = true)
         var completed = 0
-        var skippedCount = if (resolution == DownloadConflictResolution.SkipExisting) pending.existingCount else 0
-        var newSuccess = 0
-        var overwriteSuccess = 0
-        var failureCount = 0
+        var stats = DetailBulkDownloadStats.initial(
+            resolution = when (resolution) {
+                DetailDownloadConflictResolution.SkipExisting -> DetailBulkDownloadStats.Resolution.SkipExisting
+                DetailDownloadConflictResolution.OverwriteExisting -> DetailBulkDownloadStats.Resolution.OverwriteExisting
+            },
+            existingCount = pending.existingCount
+        )
 
         val semaphore = Semaphore(4)
 
@@ -2025,9 +1318,9 @@ class DetailViewModel @Inject constructor(
                             _downloadProgress.value = DownloadProgress(completed, total, fileName, true)
                             val hasExisting = !pending.existingByUrl[url].isNullOrEmpty()
                             val success = when (resolution) {
-                                DownloadConflictResolution.SkipExisting ->
+                                DetailDownloadConflictResolution.SkipExisting ->
                                     MediaSaver.saveImageIfNotExists(appContext, url, networkClient, referer = currentUrl)
-                                DownloadConflictResolution.OverwriteExisting -> {
+                                DetailDownloadConflictResolution.OverwriteExisting -> {
                                     pending.existingByUrl[url]?.let { entries ->
                                         MediaSaver.deleteMedia(appContext, entries)
                                     }
@@ -2036,19 +1329,7 @@ class DetailViewModel @Inject constructor(
                             }
 
                             downloadProgressMutex.withLock {
-                                if (success) {
-                                    if (hasExisting && resolution == DownloadConflictResolution.OverwriteExisting) {
-                                        overwriteSuccess++
-                                    } else {
-                                        newSuccess++
-                                    }
-                                } else {
-                                    if (resolution == DownloadConflictResolution.SkipExisting) {
-                                        skippedCount++
-                                    } else {
-                                        failureCount++
-                                    }
-                                }
+                                stats = stats.recordResult(success = success, hadExistingFile = hasExisting)
                                 completed++
                                 _downloadProgress.value = DownloadProgress(completed, total, fileName, true)
                             }
@@ -2060,36 +1341,12 @@ class DetailViewModel @Inject constructor(
             }
 
             withContext(Dispatchers.Main) {
-                val message = when (resolution) {
-                    DownloadConflictResolution.SkipExisting -> buildSkipMessage(newSuccess, skippedCount)
-                    DownloadConflictResolution.OverwriteExisting -> buildOverwriteMessage(newSuccess, overwriteSuccess, failureCount)
-                }
+                val message = stats.buildMessage()
                 android.widget.Toast.makeText(appContext, message, android.widget.Toast.LENGTH_SHORT).show()
             }
         } finally {
             delay(500)
             _downloadProgress.value = null
-        }
-    }
-
-    private fun buildSkipMessage(downloadedCount: Int, skippedCount: Int): String {
-        return when {
-            downloadedCount > 0 && skippedCount > 0 -> "新規ダウンロード: ${downloadedCount}件、スキップ: ${skippedCount}件"
-            downloadedCount > 0 -> "${downloadedCount}件の画像をダウンロードしました"
-            skippedCount > 0 -> "${skippedCount}件の画像は既にダウンロード済みでした"
-            else -> "ダウンロード対象の画像がありません"
-        }
-    }
-
-    private fun buildOverwriteMessage(newSuccess: Int, overwriteSuccess: Int, failureCount: Int): String {
-        val totalSuccess = newSuccess + overwriteSuccess
-        return when {
-            totalSuccess > 0 && failureCount > 0 -> "保存完了: ${totalSuccess}件（新規: ${newSuccess}件、上書き: ${overwriteSuccess}件、失敗: ${failureCount}件）"
-            totalSuccess > 0 && overwriteSuccess > 0 && newSuccess > 0 -> "保存完了: ${totalSuccess}件（新規: ${newSuccess}件、上書き: ${overwriteSuccess}件）"
-            totalSuccess > 0 && overwriteSuccess > 0 -> "既存ファイルを${overwriteSuccess}件上書き保存しました"
-            totalSuccess > 0 -> "${totalSuccess}件の画像をダウンロードしました"
-            failureCount > 0 -> "画像の保存に失敗しました"
-            else -> "ダウンロード対象の画像がありません"
         }
     }
 
@@ -2185,10 +1442,7 @@ class DetailViewModel @Inject constructor(
     fun startTtsReading() {
         val items = detailContent.value.filterIsInstance<DetailContent.Text>()
         ttsManager.playTexts(items) { text ->
-            plainTextCache.value[text.id] ?: android.text.Html.fromHtml(
-                text.htmlContent,
-                android.text.Html.FROM_HTML_MODE_COMPACT
-            ).toString()
+            plainTextCache.value[text.id] ?: DetailPlainTextFormatter.fromText(text)
         }
     }
 
@@ -2198,10 +1452,7 @@ class DetailViewModel @Inject constructor(
     fun startTtsFromResNum(resNum: String) {
         val items = detailContent.value.filterIsInstance<DetailContent.Text>()
         ttsManager.playFromResNum(resNum, items) { text ->
-            plainTextCache.value[text.id] ?: android.text.Html.fromHtml(
-                text.htmlContent,
-                android.text.Html.FROM_HTML_MODE_COMPACT
-            ).toString()
+            plainTextCache.value[text.id] ?: DetailPlainTextFormatter.fromText(text)
         }
     }
 

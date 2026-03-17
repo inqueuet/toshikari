@@ -5,6 +5,7 @@
  */
 package com.valoser.toshikari.ui.detail
 
+import com.valoser.toshikari.DetailPlainTextFormatter
 import com.valoser.toshikari.TtsManager
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -462,7 +463,7 @@ fun DetailScreenScaffold(
         ) {
             val ctx = androidx.compose.ui.platform.LocalContext.current
             val fallbackPlainProvider = remember(plainTextOf) {
-                plainTextOf ?: { t: DetailContent.Text -> android.text.Html.fromHtml(t.htmlContent, android.text.Html.FROM_HTML_MODE_COMPACT).toString() }
+                plainTextOf ?: DetailPlainTextFormatter::fromText
             }
             // UI をブロックしないためのスコープ（重い集計はメインスレッド外で実行）
             val scope = rememberCoroutineScope()
@@ -476,7 +477,7 @@ fun DetailScreenScaffold(
             }
             // 下のダイアログ/シートからも参照できるよう items / listState を上位に保持
             val raw = itemsFlow?.collectAsStateWithLifecycle(emptyList())?.value ?: emptyList()
-            val items = remember(raw) { normalizeThreadEndTime(raw) }
+            val items = remember(raw) { DetailThreadEndTimeNormalizer.normalize(raw) }
             val itemsVersion = remember(items) {
                 items.fold(0) { acc, item -> (acc * 31) xor item.id.hashCode() }
             }
@@ -629,8 +630,9 @@ fun DetailScreenScaffold(
                         onQuoteClick = { token ->
                             // 引用トークンがファイル名（xxx.jpg 等）の場合はファイル名参照の集計を優先。
                             val snapshot = items
-                            val core = token.trimStart().dropWhile { it == '>' || it == '＞' }.trim()
-                            val isFilename = Regex("""(?i)^[A-Za-z0-9._-]+\.(jpg|jpeg|png|gif|webp|bmp|mp4|webm|avi|mov|mkv)$""").matches(core)
+                            val tokenInfo = DetailQuoteTokenSupport.parse(token)
+                            val core = tokenInfo?.core.orEmpty()
+                            val isFilename = DetailQuoteTokenSupport.isFilenameToken(token)
                             scope.launch {
                                 val list = withContext(Dispatchers.Default) {
                                     if (isFilename) buildFilenameReferencesItems(snapshot, core, plainTextOf = plainOfProvider)
@@ -1063,42 +1065,17 @@ fun DetailScreenScaffold(
             // これにより、内容が少ない場合は内容高さに収まり、不要にシートを引き伸ばせなくなる。
             val idItems = idSheetItems
             if (idItems != null) {
-                val sheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true)
-                androidx.compose.material3.ModalBottomSheet(
+                DetailItemsBottomSheet(
+                    items = idItems,
                     onDismissRequest = { idSheetItems = null },
-                    sheetState = sheetState
-                ) {
-                    val screenHeight = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp
-                    val maxHeight = with(LocalDensity.current) { (screenHeight * 0.9f).dp }
-                    // 内容に応じて高さを決め、上限のみ設定
-                    androidx.compose.foundation.layout.Box(modifier = Modifier.heightIn(max = maxHeight)) {
-                        DetailListCompose(
-                            items = idItems,
-                            searchQuery = null,
-                            threadUrl = threadUrl,
-                            useLowBandwidthThumbnails = lowBandwidthMode,
-                            modifier = Modifier.wrapContentHeight(),
-                            promptLoadingIds = promptLoadingIds,
-                            plainTextCache = plainTextCache,
-                            plainTextOf = plainOfProvider,
-                            onQuoteClick = onQuoteClick,
-                            onSodaneClick = null,
-                            onThreadEndTimeClick = null,
-                            onResNumClick = null,
-                            onResNumConfirmClick = null,
-                            onResNumDelClick = null,
-                            onIdClick = null,
-                            onBodyClick = null,
-                            onAddNgFromBody = null,
-                            getSodaneState = { false },
-                            sodaneCounts = emptyMap(),
-                            onSetSodaneCount = null,
-                            onImageLoaded = handleImageLoaded,
-                            onVisibleMaxOrdinal = null,
-                            contentPadding = PaddingValues(horizontal = LocalSpacing.current.s, vertical = LocalSpacing.current.s)
-                        )
-                    }
-                }
+                    threadUrl = threadUrl,
+                    lowBandwidthMode = lowBandwidthMode,
+                    promptLoadingIds = promptLoadingIds,
+                    plainTextCache = plainTextCache,
+                    plainTextOf = plainOfProvider,
+                    onQuoteClick = onQuoteClick,
+                    onImageLoaded = handleImageLoaded
+                )
             }
 
             // 引用/No./ファイル名参照の一覧シート（Compose）
@@ -1106,42 +1083,18 @@ fun DetailScreenScaffold(
             // こちらも wrapContentHeight + heightIn(max=...) で過伸長を抑止
             val refItems = resRefItems
             if (refItems != null) {
-                val sheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true)
-                androidx.compose.material3.ModalBottomSheet(
+                DetailItemsBottomSheet(
+                    items = refItems,
                     onDismissRequest = { resRefItems = null },
-                    sheetState = sheetState
-                ) {
-                    val screenHeight = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp
-                    val maxHeight = with(LocalDensity.current) { (screenHeight * 0.9f).dp }
-                    androidx.compose.foundation.layout.Box(modifier = Modifier.heightIn(max = maxHeight)) {
-                        DetailListCompose(
-                            items = refItems,
-                            searchQuery = null,
-                            threadUrl = threadUrl,
-                            useLowBandwidthThumbnails = lowBandwidthMode,
-                            modifier = Modifier.wrapContentHeight(),
-                            promptLoadingIds = promptLoadingIds,
-                            plainTextCache = plainTextCache,
-                            plainTextOf = plainOfProvider,
-                            onQuoteClick = onQuoteClick,
-                            onSodaneClick = null,
-                            onThreadEndTimeClick = null,
-                            onResNumClick = null,
-                            onResNumConfirmClick = null,
-                            onResNumDelClick = null,
-                            onIdClick = null,
-                            onBodyClick = null,
-                            onAddNgFromBody = null,
-                            getSodaneState = { false },
-                            sodaneCounts = emptyMap(),
-                            onSetSodaneCount = null,
-                            onImageLoaded = handleImageLoaded,
-                            onVisibleMaxOrdinal = null,
-                            contentPadding = PaddingValues(horizontal = LocalSpacing.current.s, vertical = LocalSpacing.current.s)
-                        )
-                    }
+                    threadUrl = threadUrl,
+                    lowBandwidthMode = lowBandwidthMode,
+                    promptLoadingIds = promptLoadingIds,
+                    plainTextCache = plainTextCache,
+                    plainTextOf = plainOfProvider,
+                    onQuoteClick = onQuoteClick,
+                    onImageLoaded = handleImageLoaded
+                )
             }
-        }
 
         // 本ファイル末尾に補助的なトップレベル関数を定義
 
@@ -1181,41 +1134,7 @@ fun DetailScreenScaffold(
                         }
                         // Compose 標準のグリッドで表示
                         val images = remember(items, lowBandwidthMode) {
-                            data class Entry(
-                                val imageIdx: Int,
-                                val parentTextIdx: Int,
-                                val fullUrl: String,
-                                val previewUrl: String,
-                                val prompt: String?
-                            )
-                            val out = ArrayList<Entry>()
-                            // 各画像/動画に対して、直前のTextレスを探して関連付ける
-                            for (i in items.indices) {
-                                when (val c = items[i]) {
-                                    is com.valoser.toshikari.DetailContent.Image -> {
-                                        // 直前のTextレスを探す
-                                        val parentTextIdx = (i - 1 downTo 0).firstOrNull { idx ->
-                                            items[idx] is com.valoser.toshikari.DetailContent.Text
-                                        } ?: i
-                                        val preview = if (lowBandwidthMode) {
-                                            c.thumbnailUrl?.takeIf { it.isNotBlank() } ?: c.imageUrl
-                                        } else {
-                                            c.imageUrl
-                                        }
-                                        out += Entry(i, parentTextIdx, c.imageUrl, preview, c.prompt)
-                                    }
-                                    is com.valoser.toshikari.DetailContent.Video -> {
-                                        // 直前のTextレスを探す
-                                        val parentTextIdx = (i - 1 downTo 0).firstOrNull { idx ->
-                                            items[idx] is com.valoser.toshikari.DetailContent.Text
-                                        } ?: i
-                                        val preview = c.thumbnailUrl ?: c.videoUrl
-                                        out += Entry(i, parentTextIdx, c.videoUrl, preview, c.prompt)
-                                    }
-                                    else -> {}
-                                }
-                            }
-                            out
+                            DetailMediaGridEntries.build(items, lowBandwidthMode)
                         }
                         val gridColumns = if (lowBandwidthMode) 2 else 3
                         val cellHeightDp = if (lowBandwidthMode) 160.dp else 110.dp
@@ -1248,15 +1167,18 @@ fun DetailScreenScaffold(
                                 .distinctUntilChanged()
                                 .collectLatest { (first, last) ->
                                     if (images.isEmpty()) return@collectLatest
-                                    val startAhead = (last + 1).coerceAtLeast(0)
-                                    val endAhead = (last + prefetchAhead).coerceAtMost(images.lastIndex)
-                                    val startBack = (first - prefetchBack).coerceAtLeast(0)
-                                    val endBack = (first - 1).coerceAtLeast(-1)
+                                    val plan = DetailMediaPrefetchPlanner.plan(
+                                        firstVisibleIndex = first,
+                                        lastVisibleIndex = last,
+                                        lastItemIndex = images.lastIndex,
+                                        aheadCount = prefetchAhead,
+                                        backCount = prefetchBack
+                                    )
 
                                     fun urlFor(i: Int): String? = images.getOrNull(i)?.previewUrl
 
                                     // 前方プリフェッチ
-                                    for (i in startAhead..endAhead) {
+                                    for (i in plan.aheadIndices ?: IntRange.EMPTY) {
                                         val url = urlFor(i) ?: continue
                                         if (prefetched.add(url)) {
                                             val req = coil3.request.ImageRequest.Builder(ctx)
@@ -1287,35 +1209,33 @@ fun DetailScreenScaffold(
                                     }
 
                                     // 後方（少しだけ戻り）のプリフェッチ
-                                    if (endBack >= startBack) {
-                                        for (i in startBack..endBack) {
-                                            val url = urlFor(i) ?: continue
-                                            if (prefetched.add(url)) {
-                                                val req = coil3.request.ImageRequest.Builder(ctx)
-                                                    .data(url)
-                                                    .apply {
-                                                        val ref = threadUrl
-                                                        if (!ref.isNullOrBlank()) {
-                                                            httpHeaders(
-                                                                NetworkHeaders.Builder()
-                                                                    .add("Referer", ref)
-                                                                    .add("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
-                                                                    .add("Accept-Language", "ja,en-US;q=0.9,en;q=0.8")
-                                                                    .build()
-                                                            )
-                                                        }
+                                    for (i in plan.backIndices ?: IntRange.EMPTY) {
+                                        val url = urlFor(i) ?: continue
+                                        if (prefetched.add(url)) {
+                                            val req = coil3.request.ImageRequest.Builder(ctx)
+                                                .data(url)
+                                                .apply {
+                                                    val ref = threadUrl
+                                                    if (!ref.isNullOrBlank()) {
+                                                        httpHeaders(
+                                                            NetworkHeaders.Builder()
+                                                                .add("Referer", ref)
+                                                                .add("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
+                                                                .add("Accept-Language", "ja,en-US;q=0.9,en;q=0.8")
+                                                                .build()
+                                                        )
                                                     }
-                                                    .size(coil3.size.Size(coil3.size.Dimension.Pixels(cellWidthPx), coil3.size.Dimension.Pixels(cellHeightPx)))
-                                                    .scale(coil3.size.Scale.FILL)
-                                                    .precision(coil3.size.Precision.INEXACT)
-                                                    .memoryCacheKey(ImageKeys.full(url))
-                                                    .placeholderMemoryCacheKey(ImageKeys.full(url))
-                                                    .diskCachePolicy(coil3.request.CachePolicy.ENABLED)
-                                                    .memoryCachePolicy(coil3.request.CachePolicy.ENABLED)
-                                                    .networkCachePolicy(coil3.request.CachePolicy.ENABLED)
-                                                    .build()
-                                                imageLoader.enqueue(req)
-                                            }
+                                                }
+                                                .size(coil3.size.Size(coil3.size.Dimension.Pixels(cellWidthPx), coil3.size.Dimension.Pixels(cellHeightPx)))
+                                                .scale(coil3.size.Scale.FILL)
+                                                .precision(coil3.size.Precision.INEXACT)
+                                                .memoryCacheKey(ImageKeys.full(url))
+                                                .placeholderMemoryCacheKey(ImageKeys.full(url))
+                                                .diskCachePolicy(coil3.request.CachePolicy.ENABLED)
+                                                .memoryCachePolicy(coil3.request.CachePolicy.ENABLED)
+                                                .networkCachePolicy(coil3.request.CachePolicy.ENABLED)
+                                                .build()
+                                            imageLoader.enqueue(req)
                                         }
                                     }
                                 }
@@ -1377,7 +1297,7 @@ fun DetailScreenScaffold(
                                                     selectedImages.add(e.fullUrl)
                                                 }
                                             } else {
-                                                scope.launch { listState.scrollToItem(e.parentTextIdx) }
+                                                scope.launch { listState.scrollToItem(e.parentTextIndex) }
                                                 openMediaSheet = false
                                             }
                                         }
@@ -1456,8 +1376,7 @@ fun DetailScreenScaffold(
                             query = query,
                             onQueryChange = { query = it },
                             onSearch = {
-                                val q = query.trim()
-                                if (q.isNotEmpty()) onSubmitSearch(q) else onClearSearch()
+                                DetailSearchQuerySupport.normalize(query)?.let(onSubmitSearch) ?: onClearSearch()
                             },
                             expanded = true,
                             onExpandedChange = { active -> setSearchActive(active) },
@@ -1510,8 +1429,8 @@ fun DetailScreenScaffold(
                         // 入力のライブ検索（デバウンス）
                         LaunchedEffect(query, searchActive) {
                             if (searchActive) {
-                                val q = query.trim()
-                                if (q.isNotEmpty()) {
+                                val q = DetailSearchQuerySupport.normalize(query)
+                                if (q != null) {
                                     delay(300)
                                     onDebouncedSearch(q)
                                 } else {
@@ -1575,10 +1494,8 @@ fun DetailScreenScaffold(
                 // TTS再生中のレス番号が変わったら自動スクロール
                 LaunchedEffect(ttsCurrentResNum, items) {
                     if (ttsCurrentResNum != null && (ttsState is TtsManager.TtsState.Playing || ttsState is TtsManager.TtsState.Paused)) {
-                        val targetIndex = items.indexOfFirst {
-                            it is DetailContent.Text && it.resNum == ttsCurrentResNum
-                        }
-                        if (targetIndex >= 0) {
+                        val targetIndex = DetailTtsTargetIndexResolver.resolve(items, ttsCurrentResNum)
+                        if (targetIndex != null) {
                             listState.animateScrollToItem(targetIndex)
                         }
                     }
@@ -1586,9 +1503,12 @@ fun DetailScreenScaffold(
 
                 if (ttsState is TtsManager.TtsState.Playing || ttsState is TtsManager.TtsState.Paused) {
                     val bottomPx = bottomOffsetPxFlow?.collectAsState(initial = 0)?.value ?: 0
-                    // ボトムバーの高さとシステムナビゲーションバーの高さも考慮
-                    val totalBottomPx = bottomPx +
-                        if (appBarPosition == AppBarPosition.BOTTOM) bottomBarHeightPx + navigationBarHeight else 0
+                    val totalBottomPx = DetailBottomOverlayOffset.totalPx(
+                        baseBottomPx = bottomPx,
+                        appBarPosition = appBarPosition,
+                        bottomBarHeightPx = bottomBarHeightPx,
+                        navigationBarHeightPx = navigationBarHeight
+                    )
                     val bottomDp = with(LocalDensity.current) { totalBottomPx.toDp() }
                     TtsControlPanel(
                         modifier = Modifier
@@ -1616,9 +1536,12 @@ fun DetailScreenScaffold(
                 val s by searchStateFlow.collectAsStateWithLifecycle(com.valoser.toshikari.ui.detail.SearchState(false, 0, 0))
                 if (s.active) {
                     val bottomPx = bottomOffsetPxFlow?.collectAsState(initial = 0)?.value ?: 0
-                    // ボトムバーの高さとシステムナビゲーションバーの高さも考慮
-                    val totalBottomPx = bottomPx +
-                        if (appBarPosition == AppBarPosition.BOTTOM) bottomBarHeightPx + navigationBarHeight else 0
+                    val totalBottomPx = DetailBottomOverlayOffset.totalPx(
+                        baseBottomPx = bottomPx,
+                        appBarPosition = appBarPosition,
+                        bottomBarHeightPx = bottomBarHeightPx,
+                        navigationBarHeightPx = navigationBarHeight
+                    )
                     val bottomDp = with(LocalDensity.current) { totalBottomPx.toDp() }
                     SearchNavigationBar(
                         modifier = Modifier
@@ -1641,30 +1564,13 @@ fun DetailScreenScaffold(
                 // タイトルクリック要求: items が利用可能なタイミングで処理し、成功時にだけフラグを落とす
                 LaunchedEffect(titleClickPending, items) {
                     if (titleClickPending) {
-                        val firstIdx = items.indexOfFirst { it is DetailContent.Text }
-                        if (firstIdx >= 0) {
-                            val src = items[firstIdx] as DetailContent.Text
-                            val snapshot = items
-                            // 1) OP（引用元）＋タイトル内容での引用先（内容一致）
-                            val byContent = withContext(Dispatchers.Default) {
-                                buildSelfAndBackrefItems(snapshot, src, extraCandidates = setOf(title), plainTextOf = plainOfProvider)
-                            }
-                            // 2) OP の No. を使った引用先（>>No など番号参照）
-                            val rn = src.resNum
-                            val byNumber = if (!rn.isNullOrBlank()) {
-                                withContext(Dispatchers.Default) {
-                                    buildResReferencesItems(snapshot, rn, plainTextOf = plainOfProvider)
-                                }
-                            } else emptyList()
-                            // 3) 結合 + 重複排除（表示順は byContent → byNumber）
-                            if (byContent.isNotEmpty() || byNumber.isNotEmpty()) {
-                                val seen = HashSet<String>()
-                                val merged = ArrayList<DetailContent>(byContent.size + byNumber.size)
-                                for (c in byContent + byNumber) if (seen.add(c.id)) merged += c
-                                resRefItems = merged
-                            }
-                            titleClickPending = false
+                        val list = withContext(Dispatchers.Default) {
+                            DetailTitleReferenceItemsBuilder.build(items, title, plainTextOf = plainOfProvider)
                         }
+                        if (list.isNotEmpty()) {
+                            resRefItems = list
+                        }
+                        titleClickPending = false
                     }
                 }
             }
@@ -1694,23 +1600,6 @@ private fun AdBanner(adUnitId: String, onHeightChanged: (Int) -> Unit) {
         },
         update = { v: com.google.android.gms.ads.AdView -> onHeightChanged(v.measuredHeight) }
     )
-}
-
-/**
- * スレ内アイテムのうち `ThreadEndTime` を最後の 1 件だけ残すよう正規化する。
- * それ以外のアイテムの相対順序は維持する。
- */
-private fun normalizeThreadEndTime(src: List<DetailContent>): List<DetailContent> {
-    val endIdxs = src.withIndex().filter { it.value is DetailContent.ThreadEndTime }.map { it.index }
-    if (endIdxs.isEmpty()) return src
-    val keep = endIdxs.last()
-    val out = ArrayList<DetailContent>(src.size - (endIdxs.size - 1))
-    for ((i, item) in src.withIndex()) {
-        if (item is DetailContent.ThreadEndTime) {
-            if (i == keep) out += item
-        } else out += item
-    }
-    return out
 }
 
 /**

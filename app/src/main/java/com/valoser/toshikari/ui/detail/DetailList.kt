@@ -5,6 +5,7 @@
  */
 package com.valoser.toshikari.ui.detail
 
+import com.valoser.toshikari.DetailPlainTextFormatter
 /**
  * スレ詳細のコンテンツを表示する Compose 版リスト。
  *
@@ -109,7 +110,6 @@ import coil3.request.transitionFactory
 import coil3.transition.CrossfadeTransition
 import com.valoser.toshikari.image.ImageKeys
 import androidx.compose.ui.layout.ContentScale
-import android.util.Patterns
 import android.content.Intent
 import android.net.Uri
 import kotlinx.coroutines.coroutineScope
@@ -212,7 +212,7 @@ fun DetailListCompose(
     useLowBandwidthThumbnails: Boolean = false,
     modifier: Modifier = Modifier,
     // HTML->プレーンテキストの取得（ViewModelのキャッシュを利用するため注入可能）
-    plainTextOf: (DetailContent.Text) -> String = { t -> android.text.Html.fromHtml(t.htmlContent, android.text.Html.FROM_HTML_MODE_COMPACT).toString() },
+    plainTextOf: (DetailContent.Text) -> String = DetailPlainTextFormatter::fromText,
     plainTextCache: Map<String, String> = emptyMap(),
     // コールバック群 — 従来の DetailAdapter のリスナー相当をComposeで受け取る
     onQuoteClick: ((String) -> Unit)? = null,
@@ -549,9 +549,7 @@ fun DetailListCompose(
                     }
                     val plain = plainState.value.orEmpty()
                     val selfResNum = remember(plain) {
-                        // No 抽出を寛容に（ドット任意・全角許容・空白改行許容）
-                        Regex("""(?i)No[.\uFF0E]?\s*(\n?\s*)?(\d+)""").find(plain)?.groupValues?.getOrNull(2)
-                            ?: Regex("""(?i)No[.\uFF0E]?\s*(\d+)""").find(plain)?.groupValues?.getOrNull(1)
+                        DetailResNumberExtractor.extract(plain)
                     }
                     // 楽観表示の変更に追随するよう、エントリのスナップショットをキーに再計算
                     // 表示用にトークン周りの空白を補正し、そうだねの楽観カウントを適用
@@ -567,9 +565,7 @@ fun DetailListCompose(
                             .fillMaxWidth()
                             // ヘッダー行（最初の行）の背景色を設定して視覚的に分離
                             .background(
-                                if (displayText.trim().lines().firstOrNull()?.let { firstLine ->
-                                    Regex("""\d{2}/\d{2}/\d{2}\(\S+\)\d{2}:\d{2}:\d{2}""").containsMatchIn(firstLine)
-                                } == true) {
+                                if (DetailHeaderLineRules.shouldHighlightBackground(displayText)) {
                                     androidx.compose.material3.MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.3f)
                                 } else {
                                     androidx.compose.ui.graphics.Color.Transparent
@@ -624,16 +620,11 @@ fun DetailListCompose(
                                             } catch (_: Exception) {
                                             }
                                             sodane != null -> {
-                                                // 推定対象 No. を同一行から取得（なければ投稿自身の No. をフォールバック）
-                                                val adjustedOffset = offset.coerceAtMost(displayText.length)
-                                                val lineStart = displayText.lastIndexOf('\n', startIndex = adjustedOffset, ignoreCase = false)
-                                                    .let { if (it < 0) 0 else it + 1 }
-                                                val lineEnd = displayText.indexOf('\n', startIndex = lineStart)
-                                                    .let { if (it < 0) displayText.length else it }
-                                                val lineText = displayText.substring(lineStart, lineEnd)
-                                                val m = Regex("""(?i)No[.\uFF0E]?\s*(\n?\s*)?(\d+)""").find(lineText)
-                                                val rn = m?.groupValues?.getOrNull(2)
-                                                val target = rn ?: selfResNum
+                                                val target = DetailSodaneTargetResolver.resolve(
+                                                    displayText = displayText,
+                                                    offset = offset,
+                                                    fallbackResNum = selfResNum
+                                                )
                                                 if (!target.isNullOrBlank()) {
                                                     // 既に押していれば無視
                                                     val disabled = getSodaneState?.invoke(target) ?: false
@@ -1107,40 +1098,7 @@ private fun ordinalForIndex(all: List<DetailContent>, index: Int): Int {
  * - 決定した行から末尾までを本文として返す（末尾の空行は削除）。
  */
 private fun extractBodyOnlyPlain(plain: String): String {
-    fun normalize(s: String): String = java.text.Normalizer.normalize(
-        s.replace("\u200B", "").replace('　', ' ').replace('＞', '>').replace('≫', '>'),
-        java.text.Normalizer.Form.NFKC
-    )
-    val idPat = Regex("""(?i)\bID(?:[:：]|無し)\b[\w./+\-]*""")
-    val noPat = Regex("""(?i)\b(?:No|Ｎｏ)[\.\uFF0E]?\s*\d+\b""")
-    val dateTimePat = Regex("""(?:(?:\d{2}|\d{4})/\d{1,2}/\d{1,2}).*?\d{1,2}:\d{2}:\d{2}""")
-    val fileInfoHeadPat = Regex("""(?i)^\s*(?:ファイル名|画像|ファイル)[:：].*""")
-    val ext = "(?:jpg|jpeg|png|gif|webp|bmp|mp4|webm|avi|mov|mkv)"
-    // 例: foo.jpg - (123KB 800x600) / foo.png(12.3MB) など
-    val fileInfoGenericPat = Regex("""(?i)^\s*.*?\.$ext\s*[\-ー－]?\s*\([^)]*\).*""")
-    // 画像・動画サイズ表示パターン: [180986 B] や xxx.jpg-(180986 B) など
-    val fileSizePat = Regex("""^\s*(?:\[[\d\s]+[KMGT]?B\]|.*?[\-ー－]\([\d\s]+[KMGT]?B\))\s*$""")
-    val lines = plain.lines()
-    var start = 0
-    while (start < lines.size) {
-        val raw = lines[start]
-        val trimmed = raw.trimStart()
-        if (trimmed.isBlank()) { start++; continue }
-        val norm = normalize(trimmed)
-        val isHeader = idPat.containsMatchIn(norm) || noPat.containsMatchIn(norm) ||
-                dateTimePat.containsMatchIn(norm) || fileInfoHeadPat.containsMatchIn(norm) ||
-                fileInfoGenericPat.containsMatchIn(norm) || fileSizePat.containsMatchIn(trimmed)
-        // 引用行も本文に含める（isLeadQuoteのチェックを削除）
-        if (isHeader) { start++; continue }
-        break
-    }
-    val kept = lines.drop(start).filterNot { line ->
-        val trimmed = line.trim()
-        // 本文中のサイズ表示行も除外
-        fileSizePat.containsMatchIn(trimmed)
-    }
-    // 末尾の空行は削除
-    return kept.dropLastWhile { it.isBlank() }.joinToString("\n")
+    return DetailBodyTextExtractor.extract(plain)
 }
 
 /**
@@ -1152,185 +1110,75 @@ private fun extractBodyOnlyPlain(plain: String): String {
 private fun buildAnnotatedFromText(text: String, highlight: String?, threadTitle: String?, myPostNumbers: Set<String> = emptySet()): AnnotatedString = buildAnnotatedString {
     append(text)
 
-    // ヘッダー行を識別（日付時刻パターンを含む行のみ、または数字+無念+Name等のメタデータを含む最初の行のみ）
-    fun isHeaderLine(line: String, lineIndex: Int): Boolean {
-        val trimmed = line.trim()
-
-        // 日付時刻パターンがある場合は確実にヘッダー行
-        val hasDateTime = Regex("""\d{2}/\d{2}/\d{2}\(\S+\)\d{2}:\d{2}:\d{2}""").containsMatchIn(trimmed)
-        if (hasDateTime) return true
-
-        // 最初の行で、投稿番号+無念+Name+としあき のようなメタデータパターンがある場合のみ
-        if (lineIndex == 0) {
-            val hasPostNumber = Regex("""^\d+""").containsMatchIn(trimmed)
-            val hasName = Regex("""(?:無念|Name|としあき)""").containsMatchIn(trimmed)
-            val hasNo = Regex("""(?i)No[.\uFF0E]?\s*\d+""").containsMatchIn(trimmed)
-            return hasPostNumber && hasName && hasNo
-        }
-
-        return false
-    }
-
     // クリック可能要素用の色（Material3のプライマリ色）
     val clickableColor = Color(0xFF6750A4) // Material3 Primary color
 
-    // No.1234 pattern（ドット任意・全角ドット・空白許容）
-    val resRegex = Regex("""(?i)No[.\uFF0E]?\s*(\d+)""")
-    resRegex.findAll(text).forEach { m ->
-        // マッチした位置が含まれる行を特定
-        val matchStart = m.range.first
-        val lineStart = text.lastIndexOf('\n', matchStart).let { if (it < 0) 0 else it + 1 }
-        val lineEnd = text.indexOf('\n', matchStart).let { if (it < 0) text.length else it }
-        val line = text.substring(lineStart, lineEnd)
-
-        // 行インデックスを計算
-        val lineIndex = text.substring(0, lineStart).count { it == '\n' }
-
-        // ヘッダー行内のNo.または引用行内のNo.をクリック可能にする
-        val trimmedLine = line.trimStart()
-        val isQuoteLine = trimmedLine.startsWith(">") || trimmedLine.startsWith("＞")
-        if (isHeaderLine(line, lineIndex) || isQuoteLine) {
-            val num = m.groupValues[1]
-            // 自レス番号なら強調色、それ以外はプライマリ色
-            if (myPostNumbers.contains(num)) {
-                addStyle(SpanStyle(
-                    textDecoration = TextDecoration.Underline,
-                    color = Color(0xFF4CAF50), // 緑色で強調
-                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
-                ), m.range.first, m.range.last + 1)
-            } else {
-                addStyle(SpanStyle(
-                    textDecoration = TextDecoration.Underline,
-                    color = clickableColor,
-                    fontWeight = androidx.compose.ui.text.font.FontWeight.Medium
-                ), m.range.first, m.range.last + 1)
-            }
-            addStringAnnotation(tag = "res", annotation = num, start = m.range.first, end = m.range.last + 1)
+    DetailResTokenFinder.findMatches(text).forEach { match ->
+        // 自レス番号なら強調色、それ以外はプライマリ色
+        if (myPostNumbers.contains(match.number)) {
+            addStyle(SpanStyle(
+                textDecoration = TextDecoration.Underline,
+                color = Color(0xFF4CAF50), // 緑色で強調
+                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+            ), match.start, match.end)
+        } else {
+            addStyle(SpanStyle(
+                textDecoration = TextDecoration.Underline,
+                color = clickableColor,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.Medium
+            ), match.start, match.end)
         }
+        addStringAnnotation(tag = "res", annotation = match.number, start = match.start, end = match.end)
     }
     // 引用行: 行頭の空白や全角＞を許容し、タグには正規化したトークンを渡す
     // 視認性向上のため色と背景色を追加
-    val lineRegex = Regex("^(?:[\\t \\u3000])*[>＞]+[^\\n]*", RegexOption.MULTILINE)
-    lineRegex.findAll(text).forEach { m ->
-        val tokenRaw = m.value
-        val token = tokenRaw.trimStart().replace('＞', '>')
-        val start = m.range.first + (m.value.length - tokenRaw.trimStart().length)
-        val end = m.range.last + 1
+    DetailQuoteLineFinder.findMatches(text).forEach { match ->
         addStyle(SpanStyle(
             textDecoration = TextDecoration.Underline,
             color = clickableColor,
             background = Color(0x1A9C27B0), // 薄い紫色の背景
             fontWeight = androidx.compose.ui.text.font.FontWeight.Medium
-        ), start, end)
-        addStringAnnotation(tag = "quote", annotation = token, start = start, end = end)
+        ), match.start, match.end)
+        addStringAnnotation(tag = "quote", annotation = match.token, start = match.start, end = match.end)
     }
     // タイトル行: スレタイと一致する行（空白/全角差を無視）は引用としてもクリック可能にする
-    if (!threadTitle.isNullOrBlank()) {
-        fun normalize(s: String): String = java.text.Normalizer.normalize(
-            s.replace("\u200B", "").replace('　', ' ').replace('＞', '>').replace('≫', '>'),
-            java.text.Normalizer.Form.NFKC
-        ).replace(Regex("\\s+"), " ").trim()
-        val needle = normalize(threadTitle)
-        var idx = 0
-        while (idx <= text.length) {
-            val nl = text.indexOf('\n', idx)
-            val end = if (nl < 0) text.length else nl
-            val s = idx
-            val e = end
-            val line = text.substring(s, e)
-            val trimmed = line.trim()
-            // 既に '>' で始まる行は通常の引用検出に任せる
-            if (!trimmed.startsWith('>')) {
-                val norm = normalize(line)
-                if (norm.isNotBlank() && norm == needle) {
-                    val token = ">" + trimmed
-                    addStyle(SpanStyle(textDecoration = TextDecoration.Underline), s, e)
-                    addStringAnnotation(tag = "quote", annotation = token, start = s, end = e)
-                }
-            }
-            if (nl < 0) break else idx = nl + 1
-        }
+    DetailThreadTitleQuoteFinder.findMatches(text, threadTitle).forEach { match ->
+        addStyle(SpanStyle(textDecoration = TextDecoration.Underline), match.start, match.end)
+        addStringAnnotation(tag = "quote", annotation = match.token, start = match.start, end = match.end)
     }
     // ID:xxxx pattern
-    val idRegex = Regex("""ID([:：])([\u0021-\u007E\u00A0-\u00FF\w./+]+)""")
-    idRegex.findAll(text).forEach { m ->
-        val id = m.groupValues.getOrNull(2) ?: return@forEach
+    DetailIdTokenFinder.findMatches(text).forEach { match ->
         addStyle(SpanStyle(
             textDecoration = TextDecoration.Underline,
             color = clickableColor,
             fontWeight = androidx.compose.ui.text.font.FontWeight.Medium
-        ), m.range.first, m.range.last + 1)
-        addStringAnnotation(tag = "id", annotation = id, start = m.range.first, end = m.range.last + 1)
+        ), match.start, match.end)
+        addStringAnnotation(tag = "id", annotation = match.id, start = match.start, end = match.end)
     }
     // 検索ハイライト
-    if (!highlight.isNullOrBlank()) {
-        val pat = Regex(Regex.escape(highlight), RegexOption.IGNORE_CASE)
-        pat.findAll(text).forEach { f ->
-            addStyle(SpanStyle(background = Color.Yellow), f.range.first, f.range.last + 1)
-        }
+    DetailSearchHighlightFinder.findMatches(text, highlight).forEach { match ->
+        addStyle(SpanStyle(background = Color.Yellow), match.start, match.end)
     }
     // URL: クリック可能にする
-    val urlRegex = Patterns.WEB_URL.toRegex()
-    urlRegex.findAll(text).forEach { m ->
+    DetailUrlTokenFinder.findMatches(text).forEach { match ->
         addStyle(SpanStyle(
             textDecoration = TextDecoration.Underline,
             color = clickableColor
-        ), m.range.first, m.range.last + 1)
-        addStringAnnotation("url", m.value, m.range.first, m.range.last + 1)
+        ), match.start, match.end)
+        addStringAnnotation("url", match.url, match.start, match.end)
     }
     // ファイル名トークン（拡張子を含むものを検出しクリック可能に）
-    run {
-        val ext = "(?:jpg|jpeg|png|gif|webp|bmp|mp4|webm|avi|mov|mkv)"
-        val pat = Regex("""(?i)([A-Za-z0-9._-]+\.$ext)""")
-        pat.findAll(text).forEach { m ->
-            addStyle(SpanStyle(
-                textDecoration = TextDecoration.Underline,
-                color = clickableColor,
-                fontWeight = androidx.compose.ui.text.font.FontWeight.Medium
-            ), m.range.first, m.range.last + 1)
-            addStringAnnotation("filename", m.groupValues[1], m.range.first, m.range.last + 1)
-        }
+    DetailFilenameTokenFinder.findMatches(text).forEach { match ->
+        addStyle(SpanStyle(
+            textDecoration = TextDecoration.Underline,
+            color = clickableColor,
+            fontWeight = androidx.compose.ui.text.font.FontWeight.Medium
+        ), match.start, match.end)
+        addStringAnnotation("filename", match.fileName, match.start, match.end)
     }
-    // そうだねトークン（+ / ＋ / そうだね / そうだねxN）— ヘッダー行のみ、引用行を除き、No.の直後のみ対象（IDより前のみ）
-    val sodaneRegex = Regex("""(?:そうだねx\d+|そうだね|[+＋])""")
-    var start = 0
-    var lineIndex = 0
-    while (start <= text.length) {
-        val nl = text.indexOf('\n', start)
-        val end = if (nl < 0) text.length else nl
-        val lineStart = start
-        val line = text.substring(lineStart, end)
-        val trimmed = line.trimStart()
-        val isQuote = trimmed.startsWith(">")
-
-        // ヘッダー行で引用でない場合のみ処理
-        if (!isQuote && isHeaderLine(line, lineIndex)) {
-            // No.パターンを検出（行頭限定を解除）
-            val noRegex = Regex("""(?i)No[.\uFF0E]?\s*(\n?\s*)?(\d+)""")
-
-            // 行内の全てのNo.パターンを検出
-            noRegex.findAll(line).forEach { noMatch ->
-                // No.の後、次のトークン（ID:など）までの範囲を確認
-                val afterNoStartInLine = noMatch.range.last + 1
-                if (afterNoStartInLine < line.length) {
-                    val afterNo = line.substring(afterNoStartInLine)
-
-                    // IDパターンを検出して、それより前の範囲に限定
-                    val idMatch = Regex("""ID[:：]""").find(afterNo)
-                    val searchEnd = idMatch?.range?.first ?: afterNo.length
-                    val searchRange = afterNo.substring(0, searchEnd)
-
-                    // 最初のそうだねトークンのみを対象にする
-                    sodaneRegex.find(searchRange)?.let { sodaneMatch ->
-                        val s = lineStart + afterNoStartInLine + sodaneMatch.range.first
-                        val e = lineStart + afterNoStartInLine + sodaneMatch.range.last + 1
-                        addStyle(SpanStyle(textDecoration = TextDecoration.Underline), s, e)
-                        addStringAnnotation("sodane", "1", s, e)
-                    }
-                }
-            }
-        }
-        if (nl < 0) break else { start = nl + 1; lineIndex++ }
+    DetailSodaneTokenFinder.findMatches(text).forEach { match ->
+        addStyle(SpanStyle(textDecoration = TextDecoration.Underline), match.start, match.end)
+        addStringAnnotation("sodane", "1", match.start, match.end)
     }
 }
 
@@ -1343,89 +1191,10 @@ private val stringProcessingCache = LruCache<String, String>(100)
  */
 private fun padTokensForSpacingCached(src: String): String {
     return stringProcessingCache.get(src) ?: run {
-        val result = padTokensForSpacing(src)
+        val result = DetailSodaneTextFormatter.padTokensForSpacing(src)
         stringProcessingCache.put(src, result)
         result
     }
-}
-
-private fun padTokensForSpacing(src: String): String {
-    var t = src.replace("\u200B", "")
-    // 表記ゆれ吸収: 全角→半角などを正規化し、半角スペースに統一
-    t = java.text.Normalizer.normalize(t.replace('　', ' '), java.text.Normalizer.Form.NFKC)
-    // 日付や括弧閉じの直後に No が隣接してしまうケースを緩和（例: "...12:34:56)No.1234" → ") No.1234"）
-    // 数字または ')' の直後に No が続く場合にスペースを補う。
-    t = Regex("""([0-9)])\s*(?=No[.\uFF0E]?)""", RegexOption.IGNORE_CASE).replace(t, "$1 ")
-    // 汎用: 非空白直後に No が続く場合はスペースを補う（ID と No が隣接しているケース等の取りこぼしを補完）
-    t = Regex("""(?i)(?<=\S)(?=No[.\uFF0E]?\s*\d+)""").replace(t, " ")
-    // ID:xxxx と No.xxxx の間に順不同で必ず空白を入れる（No のドット・全角ドット・空白を許容）
-    t = Regex("""(?i)(ID[:：][\\w./+\-]+)\s*(?=No[.\uFF0E]?)""", RegexOption.IGNORE_CASE).replace(t, "$1 ")
-    t = Regex("""(?i)(No[.\uFF0E]?\s*\d+)\s*(?=ID[:：])""", RegexOption.IGNORE_CASE).replace(t, "$1 ")
-    // No.xxxx と +/そうだね トークンの間に空白を入れる（No のドット・全角ドット・空白を許容）
-    t = Regex("""(No[.\uFF0E]?\s*\d+)(?=(?:[+＋]|そうだね))""").replace(t, "$1 ")
-    // 複数の空白を1つに正規化
-    t = Regex("[ ]{2,}").replace(t, " ")
-    // ヘッダー行を識別する関数（buildAnnotatedFromTextと同じ）
-    fun isHeaderLine(line: String, lineIndex: Int): Boolean {
-        val trimmed = line.trim()
-
-        // 日付時刻パターンがある場合は確実にヘッダー行
-        val hasDateTime = Regex("""\d{2}/\d{2}/\d{2}\(\S+\)\d{2}:\d{2}:\d{2}""").containsMatchIn(trimmed)
-        if (hasDateTime) return true
-
-        // 最初の行で、投稿番号+無念+Name+としあき のようなメタデータパターンがある場合のみ
-        if (lineIndex == 0) {
-            val hasPostNumber = Regex("""^\d+""").containsMatchIn(trimmed)
-            val hasName = Regex("""(?:無念|Name|としあき)""").containsMatchIn(trimmed)
-            val hasNo = Regex("""(?i)No[.\uFF0E]?\s*\d+""").containsMatchIn(trimmed)
-            return hasPostNumber && hasName && hasNo
-        }
-
-        return false
-    }
-
-    // No. を含む非引用行の末尾に そうだね トークンが無ければ付与（IDより前の位置のみチェック）
-    // ただし、ヘッダー行のみに適用する
-    val sb = StringBuilder()
-    var start = 0
-    var lineIndex = 0
-    while (start < t.length) {
-        val nl = t.indexOf('\n', start)
-        val end = if (nl < 0) t.length else nl
-        val line = t.substring(start, end)
-        val trimmed = line.trimStart()
-        val isQuote = trimmed.startsWith(">")
-        // No. を行内どこでも許容（行頭限定を解除）
-        val hasNo = Regex("""(?i)\bNo[.\uFF0E]?\s*\d+\b""").containsMatchIn(trimmed)
-
-        // ヘッダー行で、引用でなくNo.を含む場合に「そうだね」を追加
-        if (isHeaderLine(line, lineIndex) && !isQuote && hasNo) {
-            // No.の直後に「そうだね」を挿入する
-            val noPattern = Regex("""(?i)(No[.\uFF0E]?\s*\d+)""")
-            val noMatch = noPattern.find(line)
-
-            if (noMatch != null) {
-                val beforeNo = line.substring(0, noMatch.range.first)
-                val noText = noMatch.value
-                val afterNo = line.substring(noMatch.range.last + 1)
-
-                // No.の後に既にそうだねがあるかチェック
-                if (!Regex("""^\s*(?:[+＋]|そうだね(?:x\d+)?)""").containsMatchIn(afterNo)) {
-                    // No.の直後に「そうだね」を挿入
-                    sb.append(beforeNo).append(noText).append(" そうだね").append(afterNo)
-                } else {
-                    sb.append(line)
-                }
-            } else {
-                sb.append(line)
-            }
-        } else sb.append(line)
-
-        if (nl >= 0) sb.append('\n')
-        start = if (nl < 0) t.length else nl + 1
-        lineIndex++
-    }
-    return sb.toString()
 }
 
 /**
@@ -1435,52 +1204,7 @@ private fun padTokensForSpacing(src: String): String {
  * - ヘッダー行のみに適用する。
  */
 private fun applySodaneDisplay(text: String, overrides: Map<String, Int>, selfResNum: String?): String {
-    if (overrides.isEmpty()) return text
-
-    // ヘッダー行を識別する関数（buildAnnotatedFromTextと同じ）
-    fun isHeaderLine(line: String, lineIndex: Int): Boolean {
-        val trimmed = line.trim()
-
-        // 日付時刻パターンがある場合は確実にヘッダー行
-        val hasDateTime = Regex("""\d{2}/\d{2}/\d{2}\(\S+\)\d{2}:\d{2}:\d{2}""").containsMatchIn(trimmed)
-        if (hasDateTime) return true
-
-        // 最初の行で、投稿番号+無念+Name+としあき のようなメタデータパターンがある場合のみ
-        if (lineIndex == 0) {
-            val hasPostNumber = Regex("""^\d+""").containsMatchIn(trimmed)
-            val hasName = Regex("""(?:無念|Name|としあき)""").containsMatchIn(trimmed)
-            val hasNo = Regex("""(?i)No[.\uFF0E]?\s*\d+""").containsMatchIn(trimmed)
-            return hasPostNumber && hasName && hasNo
-        }
-
-        return false
-    }
-
-    val sb = StringBuilder(text.length + 100) // 事前サイズ指定
-    var start = 0
-    var lineIndex = 0
-    while (start < text.length) {
-        val nl = text.indexOf('\n', start)
-        val end = if (nl < 0) text.length else nl
-        var line = text.substring(start, end)
-
-        // ヘッダー行のみに楽観表示を適用
-        if (isHeaderLine(line, lineIndex)) {
-            // No の抽出も寛容に（ドット任意・全角許容・空白改行許容）
-            val m = Regex("""(?i)No[.\uFF0E]?\s*(\d+)""").find(line)
-            val rn = m?.groupValues?.getOrNull(1) ?: selfResNum
-            val cnt = rn?.let { overrides[it] }
-            if (cnt != null && cnt > 0) {
-                line = line.replace(Regex("(?:そうだねx\\d+|そうだね|[+＋])"), "そうだねx$cnt")
-            }
-        }
-
-        sb.append(line)
-        if (nl >= 0) sb.append('\n')
-        start = if (nl < 0) text.length else nl + 1
-        lineIndex++
-    }
-    return sb.toString()
+    return DetailSodaneTextFormatter.applySodaneDisplay(text, overrides, selfResNum)
 }
 
 /**

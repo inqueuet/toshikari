@@ -25,6 +25,8 @@ import androidx.preference.PreferenceManager
 import com.valoser.toshikari.HistoryManager
 import com.valoser.toshikari.NetworkClient
 import com.valoser.toshikari.UrlNormalizer
+import com.valoser.toshikari.DetailPromptMerger
+import com.valoser.toshikari.DetailHtmlParsingSupport
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import org.jsoup.nodes.Document
@@ -108,32 +110,7 @@ class ThreadMonitorWorker @AssistedInject constructor(
             // 1.5) 既存キャッシュ/スナップショットのプロンプトをマージ（nullでの上書きを防止）
             val cacheMgr = cacheManager
             val existing: List<DetailContent>? = cacheMgr.loadDetails(url) ?: cacheMgr.loadArchiveSnapshot(url)
-            val merged = if (existing.isNullOrEmpty()) parsed else run {
-                val promptByName: Map<String, String> = existing.mapNotNull { dc ->
-                    when (dc) {
-                        is DetailContent.Image -> dc.fileName?.let { fn -> dc.prompt?.let { fn to it } }
-                        is DetailContent.Video -> dc.fileName?.let { fn -> dc.prompt?.let { fn to it } }
-                        else -> null
-                    }
-                }.toMap()
-                parsed.map { dc ->
-                    when (dc) {
-                        is DetailContent.Image -> {
-                            if (!dc.prompt.isNullOrBlank()) dc else {
-                                val p = dc.fileName?.let { promptByName[it] }
-                                if (p != null) dc.copy(prompt = p) else dc
-                            }
-                        }
-                        is DetailContent.Video -> {
-                            if (!dc.prompt.isNullOrBlank()) dc else {
-                                val p = dc.fileName?.let { promptByName[it] }
-                                if (p != null) dc.copy(prompt = p) else dc
-                            }
-                        }
-                        else -> dc
-                    }
-                }
-            }
+            val merged = if (existing.isNullOrEmpty()) parsed else DetailPromptMerger.mergeByFileName(parsed, existing)
 
             // 2) 自動で媒体を保存するかは利用者設定で制御（既定では保存しない）
             val shouldArchiveMedia = PreferenceManager.getDefaultSharedPreferences(applicationContext)
@@ -325,14 +302,6 @@ class ThreadMonitorWorker @AssistedInject constructor(
         }
     }
 
-        /** サポートされている画像/動画拡張子で終わるURLなら true を返す。 */
-        private fun isMediaUrl(href: String): Boolean {
-        val lower = href.lowercase()
-        return lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png") ||
-                lower.endsWith(".gif") || lower.endsWith(".webp") ||
-                lower.endsWith(".mp4") || lower.endsWith(".webm")
-    }
-
     /**
      * スレッドHTMLを直列の `DetailContent` リストへ変換する。
      * - 先頭のOPブロック（index 0）と、`.rtd` 周辺の table をたどって各返信ブロックを抽出
@@ -346,12 +315,7 @@ class ThreadMonitorWorker @AssistedInject constructor(
         val threadContainer = document.selectFirst("div.thre") ?: return emptyList()
 
         // スレッドIDを抽出（DetailViewModelと同じロジック）
-        val threadId = baseUrl.substringAfterLast('/').substringBefore(
-            ".htm",
-            missingDelimiterValue = baseUrl.substringAfterLast('/')
-        ).ifBlank {
-            baseUrl.hashCode().toUInt().toString(16)
-        }
+        val threadId = DetailHtmlParsingSupport.extractThreadId(baseUrl)
 
         val postBlocks = mutableListOf<Element>()
         postBlocks.add(threadContainer)
@@ -369,58 +333,30 @@ class ThreadMonitorWorker @AssistedInject constructor(
 
             if (html.isNotBlank()) {
                 // レス番号を抽出（DetailViewModelと同じロジック）
-                val resNum = if (isOp) {
-                    threadId
-                } else {
-                    Regex("""No\.?\s*(\n?\s*)?(\d+)""").find(html)?.groupValues?.getOrNull(2)
-                        ?: Regex("""No\.?\s*(\d+)""").find(html)?.groupValues?.getOrNull(1)
-                }
+                val resNum = DetailHtmlParsingSupport.extractResNum(html, isOp, threadId)
 
-                // DetailViewModelと同じID形式
-                val stableId = if (isOp) {
-                    "text_op_$threadId"
-                } else {
-                    "text_${resNum ?: "reply_${threadId}_${index}"}"
-                }
+                val stableId = DetailHtmlParsingSupport.buildTextContentId(isOp, threadId, resNum, index)
 
                 result += DetailContent.Text(id = stableId, htmlContent = html, resNum = resNum)
             }
 
-            val a = block.select("a[target=_blank][href]").firstOrNull { el -> isMediaUrl(el.attr("href")) }
+            val a = block.select("a[target=_blank][href]").firstOrNull { el ->
+                DetailHtmlParsingSupport.isMediaUrl(el.attr("href"))
+            }
             if (a != null) {
                 val href = a.attr("href")
                 try {
                     val absolute = URL(URL(baseUrl), href).toString()
-                    val fileName = absolute.substringAfterLast('/')
-                    val lower = href.lowercase()
-                    if (lower.endsWith(".mp4") || lower.endsWith(".webm")) {
-                        result += DetailContent.Video(
-                            id = "video_${absolute.hashCode().toUInt().toString(16)}",
-                            videoUrl = absolute,
-                            prompt = null,
-                            fileName = fileName,
-                            thumbnailUrl = null
-                        )
-                    } else {
-                        result += DetailContent.Image(id = "image_${absolute.hashCode().toUInt().toString(16)}", imageUrl = absolute, prompt = null, fileName = fileName)
-                    }
+                    DetailHtmlParsingSupport.buildMediaContent(
+                        absoluteUrl = absolute,
+                        rawHref = href
+                    )?.let { result += it }
                 } catch (_: MalformedURLException) { /* ignore */ }
             }
         }
 
-        // スレ終了時刻の検出（ベストエフォート・任意）
-        val scriptElements = document.select("script")
-        for (script in scriptElements) {
-            val data = script.data()
-            if (data.contains("document.write") && data.contains("contdisp")) {
-                val t = Regex("""(\d{2}/\d{2}/\d{2}\([^)]*\)\d{2}:\d{2})""")
-                val m = t.find(data)
-                val end = m?.groupValues?.getOrNull(1)
-                if (!end.isNullOrBlank()) {
-                    result += DetailContent.ThreadEndTime(id = "thread_end_time_${end.hashCode().toUInt().toString(16)}", endTime = end)
-                    break
-                }
-            }
+        DetailHtmlParsingSupport.extractThreadEndTime(document)?.let { end ->
+            result += DetailHtmlParsingSupport.buildThreadEndTimeContent(end)
         }
 
         return result

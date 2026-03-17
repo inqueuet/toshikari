@@ -1,8 +1,7 @@
 package com.valoser.toshikari.ui.detail
 
-import android.text.Html
 import com.valoser.toshikari.DetailContent
-import java.text.Normalizer
+import com.valoser.toshikari.DetailPlainTextFormatter
 
 /**
  * 引用トークン（"> xxx" や ">> No.1234" のような形式）に対応するアイテムを構築します。
@@ -16,43 +15,23 @@ import java.text.Normalizer
 internal fun buildQuoteItems(
     all: List<DetailContent>,
     token: String,
-    plainTextOf: (DetailContent.Text) -> String = { t -> Html.fromHtml(t.htmlContent, Html.FROM_HTML_MODE_COMPACT).toString() },
+    plainTextOf: (DetailContent.Text) -> String = DetailPlainTextFormatter::fromText,
 ): List<DetailContent> {
-    // トークンを正規化（先頭の全角空白を半角へ、全角 ＞ 系を '>' へ、前方空白を除去）
-    val t0 = token.replace('\u3000', ' ').replace('＞', '>').replace('≫', '>').trimStart()
-    val level = t0.takeWhile { it == '>' }.length.coerceAtLeast(1)
-    val core = t0.drop(level).trim()
-    if (core.isBlank()) return emptyList()
-
-    fun normalize(s: String): String = Normalizer.normalize(
-        s.replace("\u200B", "").replace('　', ' ').replace('＞', '>').replace('≫', '>'),
-        Normalizer.Form.NFKC
-    ).replace(Regex("\\s+"), " ").trim()
-
-    val needle = normalize(core)
+    val tokenInfo = DetailQuoteTokenSupport.parse(token) ?: return emptyList()
+    val needle = tokenInfo.normalizedCore
 
     // 完全一致: プレーンテキストを行単位で正規化し、1行が needle と等しいもののみヒット
     val textIdx = all.withIndex().filter { (_, c) ->
         if (c !is DetailContent.Text) return@filter false
         val plain = plainTextOf(c)
         plain.lines()
-            .map { normalize(it) }
+            .map(DetailTextNormalizer::normalizeCollapsed)
             .any { it.isNotBlank() && it == needle }
     }.map { it.index }
 
     if (textIdx.isEmpty()) return emptyList()
 
-    val result = mutableListOf<DetailContent>()
-    for (i in textIdx) {
-        result += all[i]
-        var j = i + 1
-        while (j < all.size) {
-            when (val c = all[j]) {
-                is DetailContent.Image, is DetailContent.Video -> { result += c; j++ }
-                is DetailContent.Text, is DetailContent.ThreadEndTime -> break
-            }
-        }
-    }
+    val result = DetailContentGroupSupport.collectGroupsAt(all, textIdx).flatten()
 
     return result.distinctBy { it.id }
 }
@@ -72,30 +51,20 @@ internal fun buildQuoteAndBackrefItems(
     all: List<DetailContent>,
     token: String,
     threadTitle: String?,
-    plainTextOf: (DetailContent.Text) -> String = { t -> Html.fromHtml(t.htmlContent, Html.FROM_HTML_MODE_COMPACT).toString() },
+    plainTextOf: (DetailContent.Text) -> String = DetailPlainTextFormatter::fromText,
 ): List<DetailContent> {
-    // トークンを正規化（先頭の全角空白を半角へ、全角 ＞ 系を '>' へ、前方空白を除去）
-    val t0 = token.replace('\u3000', ' ').replace('＞', '>').replace('≫', '>').trimStart()
-    val level = t0.takeWhile { it == '>' }.length.coerceAtLeast(1)
-    val core = t0.drop(level).trim()
-    if (core.isBlank()) return emptyList()
-
-    fun normalize(s: String): String = Normalizer.normalize(
-        s.replace("\u200B", "").replace('　', ' ').replace('＞', '>').replace('≫', '>'),
-        Normalizer.Form.NFKC
-    ).replace(Regex("\\s+"), " ").trim()
-
-    val needle = normalize(core)
+    val tokenInfo = DetailQuoteTokenSupport.parse(token) ?: return emptyList()
+    val needle = tokenInfo.normalizedCore
 
     // 1) 引用元 Text のインデックスを抽出（行単位の完全一致）
     val sourceIdxsMutable = all.withIndex().filter { (_, c) ->
         if (c !is DetailContent.Text) return@filter false
         val lines = plainTextOf(c).lines()
-        lines.map { normalize(it) }.any { it.isNotBlank() && it == needle }
+        lines.map(DetailTextNormalizer::normalizeCollapsed).any { it.isNotBlank() && it == needle }
     }.map { it.index }
     val sourceIdxs = sourceIdxsMutable.toMutableSet()
     // スレタイと一致する場合は OP（最初の Text）も引用元扱いにする
-    val titleNorm = threadTitle?.let { normalize(it) }
+    val titleNorm = threadTitle?.let(DetailTextNormalizer::normalizeCollapsed)
     val firstTextIdx = all.indexOfFirst { it is DetailContent.Text }
     val titleMatched = !titleNorm.isNullOrBlank() && titleNorm == needle && firstTextIdx >= 0
     if (titleMatched) sourceIdxs.add(firstTextIdx)
@@ -105,18 +74,9 @@ internal fun buildQuoteAndBackrefItems(
     val groups = mutableListOf<List<DetailContent>>()
     val sourceTexts = mutableListOf<DetailContent.Text>()
     for (i in sourceIdxs) {
-        val group = mutableListOf<DetailContent>()
         val t = all[i]
         if (t is DetailContent.Text) sourceTexts += t
-        group += t
-        var j = i + 1
-        while (j < all.size) {
-            when (val c = all[j]) {
-                is DetailContent.Image, is DetailContent.Video -> { group += c; j++ }
-                is DetailContent.Text, is DetailContent.ThreadEndTime -> break
-            }
-        }
-        groups += group
+        groups += DetailContentGroupSupport.collectGroupAt(all, i)
     }
 
     // 3) 各引用元に対し、本文を引用している被引用（およびその直後メディア）を追加
@@ -126,54 +86,19 @@ internal fun buildQuoteAndBackrefItems(
         // 本文内容に基づく被引用
         val back = buildBackReferencesByContent(all, src, extraCandidates = extra, plainTextOf = plainTextOf)
         if (back.isNotEmpty()) {
-            // back はフラット化済みなので、先頭要素単位で再グルーピングして整形
-            val backGroups = mutableListOf<List<DetailContent>>()
-            var k = 0
-            while (k < back.size) {
-                val first = back[k]
-                val group = mutableListOf<DetailContent>()
-                group += first
-                k++
-                while (k < back.size && back[k] !is DetailContent.Text) {
-                    group += back[k]
-                    k++
-                }
-                backGroups += group
-            }
-            groups += backGroups
+            groups += DetailContentGroupSupport.regroupFlatItems(back)
         }
         // No. に基づく被引用（>>No）
         run {
-            val plain = plainTextOf(src)
-            val rn = Regex("""(?i)(?:No|Ｎｏ)[\.\uFF0E]?\s*(\d+)""")
-                .find(plain)?.groupValues?.getOrNull(1)
+            val rn = DetailContentResOrderSupport.extractResNumber(src, plainTextOf)?.toString()
             if (!rn.isNullOrBlank()) {
                 val byNum = buildResReferencesItems(all, rn, plainTextOf = plainTextOf)
                 if (byNum.isNotEmpty()) {
-                    var k = 0
-                    while (k < byNum.size) {
-                        val first = byNum[k]
-                        val g = mutableListOf<DetailContent>()
-                        g += first
-                        k++
-                        while (k < byNum.size && byNum[k] !is DetailContent.Text) {
-                            g += byNum[k]
-                            k++
-                        }
-                        groups += g
-                    }
+                    groups += DetailContentGroupSupport.regroupFlatItems(byNum)
                 }
             }
         }
     }
 
-    // 先頭 Text の id でグループを重複排除しフラット化。さらに要素も id で一意化（順序維持）。
-    val uniqueGroups = groups.distinctBy { it.firstOrNull()?.id }
-    val flat = uniqueGroups.flatten()
-    val seen = HashSet<String>()
-    val out = ArrayList<DetailContent>(flat.size)
-    for (c in flat) {
-        if (seen.add(c.id)) out += c
-    }
-    return out
+    return DetailContentGroupSupport.flattenDistinctGroups(groups)
 }
