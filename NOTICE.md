@@ -5,7 +5,6 @@
 | ライブラリ | ライセンス | プロジェクト URL |
 | --- | --- | --- |
 | Android Jetpack (AndroidX, Compose, WorkManager, etc.) | Apache License 2.0 | https://developer.android.com/jetpack |
-| Google Play services Ads | Apache License 2.0 | https://developers.google.com/admob |
 | Firebase (Analytics) | Apache License 2.0 | https://firebase.google.com/ |
 | Hilt / Dagger | Apache License 2.0 | https://dagger.dev/ |
 | OkHttp / Okio | Apache License 2.0 | https://square.github.io/okhttp/ |

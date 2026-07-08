@@ -9,9 +9,6 @@
 ## Firebase Analytics
 アプリの利用状況を匿名で収集する目的で Firebase Analytics を利用することがあります。Firebase が収集するデータやオプトアウト方法については [Firebase 利用規約](https://firebase.google.com/support/privacy) を参照してください。Analytics を無効化したビルドを使用することも可能です。
 
-## Google Mobile Ads (AdMob)
-広告表示のために Google Mobile Ads SDK を利用します。広告 ID やデバイス情報が Google に送信される場合があります。詳細は [Google の広告に関するポリシー](https://policies.google.com/technologies/ads?hl=ja) を参照してください。
-
 ## ログ・診断
 アプリはクラッシュログや操作ログを外部へ送信しません。ただし、Logcat へ出力された情報はユーザーの端末内に保存される場合があります。
 

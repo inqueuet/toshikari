@@ -12,7 +12,7 @@ Toshikari は、二次元画像掲示板「ふたば☆ちゃんねる」系サ�
 - **画像編集**: Mosaic/消しゴムツール付きの簡易画像編集 (`ImageEditActivity` + `EditingEngine`)、保存時に EXIF プロンプトも可能な限り引き継ぎ。
 - **動画編集**: クリップのトリム・分割・削除、音声ボリューム/キーフレーム制御、速度調整（0.25x–4x）、波形表示、プリセット付きエクスポート (`videoeditor` サブシステム、MVI + Clean Architecture)。
 - **読み上げ**: スレ本文の Text-To-Speech 読み上げと速度調整、レス番号追跡 (`TtsManager`)。
-- **ユーティリティ**: 端末内画像のメタデータ閲覧 (`ImageDisplayActivity`)、catset 設定の自動適用、AdMob バナー（テスト ID デフォルト）。
+- **ユーティリティ**: 端末内画像のメタデータ閲覧 (`ImageDisplayActivity`)、catset 設定の自動適用。
 
 ## 技術スタック
 - Kotlin 2.3 / Gradle 8.13 (AGP 8.13) / JDK 17（バイトコード JVM 11）
@@ -22,7 +22,6 @@ Toshikari は、二次元画像掲示板「ふたば☆ちゃんねる」系サ�
 - Media3 1.9 (ExoPlayer UI + Transformer)、AndroidX ExifInterface
 - AndroidX SplashScreen、AndroidX Startup
 - Firebase Analytics（`google-services.json` が存在する場合のみ有効）
-- Google Mobile Ads SDK（AdMob、OSS 版はテスト ID）
 
 ## 動作要件
 - Android Studio Ladybug 以上
@@ -32,11 +31,10 @@ Toshikari は、二次元画像掲示板「ふたば☆ちゃんねる」系サ�
 ## セットアップ
 1. リポジトリをクローンします。
 2. （任意）Firebase Analytics を使う場合は `app/google-services.example.json` をコピーして `google-services.json` を作成し、Firebase Console の値を設定します。ファイルが無い場合はプラグインが自動的に無効化されます。
-3. （任意）AdMob を本番 ID で使う場合は `app/src/main/res/values/strings.xml` の `admob_app_id` / `admob_banner_id` をビルド時に差し替えてください（`build.gradle.kts` の `resValue` でも可）。
-4. Android Studio でプロジェクトを開き Gradle Sync を実行、または CLI で `./gradlew assembleDebug` を実行してデバッグビルドを生成します。
+3. Android Studio でプロジェクトを開き Gradle Sync を実行、または CLI で `./gradlew assembleDebug` を実行してデバッグビルドを生成します。
 
 ### 秘匿情報の管理
-- Firebase API キーや AdMob ID、署名鍵 (`.jks` / `.keystore` / `.p12`) は公開リポジトリへ含めないでください。
+- Firebase API キーや署名鍵 (`.jks` / `.keystore` / `.p12`) は公開リポジトリへ含めないでください。
 - 署名鍵や本番用 ID は `local.properties` や CI のシークレットから読み込む構成を推奨します。
 
 ### 開発メモ
@@ -56,6 +54,6 @@ Toshikari は、二次元画像掲示板「ふたば☆ちゃんねる」系サ�
 
 ## コントリビューション
 Pull Request / Issue は歓迎します。コントリビューション時は次の点にご留意ください。
-- Firebase や AdMob の実環境情報はモック化・削除した状態で共有する
+- Firebase の実環境情報はモック化・削除した状態で共有する
 - 変更内容にテスト（単体/UI）がある場合は PR に記載し、必要に応じて追加する
 - 大きな仕様変更やリファクタリングは事前に Issue で方向性を相談してください
